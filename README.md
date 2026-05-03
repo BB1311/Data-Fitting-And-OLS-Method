@@ -3,8 +3,6 @@
 **Thành viên:** (liệt kê họ tên – MSSV)  
 
 ## Cài đặt môi trường
-```bash
-python -m venv .venv
-.venv\Scripts\activate # Windows; Lệnh macOS/Linux tương ứng: source .venv/bin/activate     
+```bash   
 pip install -r requirements.txt
 ```
