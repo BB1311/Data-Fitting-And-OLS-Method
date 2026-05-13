@@ -428,6 +428,7 @@ def test_metrics_second_case():
     _assert_close(m["tss"], 6.0, msg="TSS case 2")
     _assert_close(m["ess"], 4.5, msg="ESS case 2")
     _assert_close(m["rss"], 1.5, msg="RSS case 2")
+    _assert_close(m["ess"] + m["rss"], m["tss"], tol=1e-10, msg="TSS = ESS + RSS")
     print("test_metrics_second_case PASSED")
 
 # Edge Cases
