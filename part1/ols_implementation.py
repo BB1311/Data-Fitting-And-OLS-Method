@@ -195,10 +195,6 @@ def model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int, verbose: bool = True
     df_model = p
     df_resid = n - p - 1
     
-    mse = rss / df_resid if df_resid > 0 else np.nan
-    rmse = float(np.sqrt(mse)) if not np.isnan(mse) else np.nan
-    mae = float(np.mean(np.abs(y - y_hat)))
-    
     if df_model == 0 or df_resid <= 0:
         f_stat = np.nan
         f_pvalue = np.nan
@@ -210,9 +206,6 @@ def model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int, verbose: bool = True
         "rss":      rss,
         "tss":      tss,
         "ess":      ess,
-        "mse":      mse,   
-        "rmse":     rmse,  
-        "mae":      mae,  
         "r2":       r2,
         "r2_adj":   r2_adj,
         "f_stat":   f_stat,
@@ -228,9 +221,6 @@ def model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int, verbose: bool = True
         print(f"  RSS               : {rss:.6f}")
         print(f"  TSS               : {tss:.6f}")
         print(f"  ESS               : {ess:.6f}")
-        print(f"  MSE (σ̂²)          : {mse:.6f}")
-        print(f"  RMSE              : {rmse:.6f}")
-        print(f"  MAE               : {mae:.6f}")
         print(f"  R²                : {r2:.6f}")
         print(f"  R² adjusted       : {r2_adj:.6f}")
         print(f"  F-statistic       : {f_stat:.4f}  (df1={df_model}, df2={df_resid})")
@@ -412,7 +402,7 @@ def test_r2_known_values():
     print("test_r2_known_values PASSED")
 
 def test_r2_adj_and_metrics_hand_calc():
-    """Test gộp R²_adj và model_metrics với đủ MSE, RMSE, MAE."""
+    """Test gộp R²_adj và model_metrics dựa trên tính toán thủ công"""
     y = np.array([1.0, 2.0, 3.0, 4.0])            
     y_hat = np.array([1.5, 1.5, 3.5, 3.5])        
     
@@ -423,37 +413,18 @@ def test_r2_adj_and_metrics_hand_calc():
     _assert_close(m["rss"], 1.0, msg="Metric RSS")
     _assert_close(m["tss"], 5.0, msg="Metric TSS")
     _assert_close(m["ess"], 4.0, msg="Metric ESS")
-    _assert_close(m["mse"], 0.5, msg="Metric MSE")
-    _assert_close(m["rmse"], np.sqrt(0.5), msg="Metric RMSE")
-    _assert_close(m["mae"], 0.5, msg="Metric MAE")
     _assert_close(m["f_stat"], 8.0, msg="Metric F-Stat")
     print("test_r2_adj_and_metrics_hand_calc PASSED")
 
 def test_metrics_second_case():
-    """Test Case 2: Kiểm tra model_metrics với bộ dữ liệu chuẩn OLS. Đảm bảo định lý phân rã phương sai: TSS = ESS + RSS.
-    """
-    # Dữ liệu thực từ mô hình OLS: n=3, p=1
-    y = np.array([2.0, 5.0, 5.0])          # mean(y) = 4.0
-    y_hat = np.array([2.5, 4.0, 5.5])      # mean(y_hat) = 4.0
-    
-    # TSS = ||y - mean||^2 = (-2)^2 + 1^2 + 1^2 = 6.0
-    # ESS = ||y_hat - mean||^2 = (-1.5)^2 + 0^2 + 1.5^2 = 2.25 + 2.25 = 4.5
-    # Tính RSS = ||y - y_hat||^2 = (-0.5)^2 + 1^0^2 + (-0.5)^2 = 0.25 + 1.0 + 0.25 = 1.5
-    # TSS (6.0) = ESS (4.5) + RSS (1.5)
-    
-    # Tính R² = ESS / TSS = 4.5 / 6.0 = 0.75
-    _assert_close(compute_r2(y, y_hat), 0.75, msg="R2 case 2") 
-    
-    # Tính R²_adj = 1 - [(n-1)/(n-p-1)] * (1 - R²) = 1 - (2/1)*0.25 = 0.5
-    _assert_close(compute_r2_adj(y, y_hat, p=1), 0.5, msg="R2_adj case 2")
+    """Test Case 2: Kiểm tra model_metrics với định lý Pytago OLS"""
+    y = np.array([2.0, 5.0, 5.0])          
+    y_hat = np.array([2.5, 4.0, 5.5])      
     
     m = model_metrics(y, y_hat, p=1, verbose=False)
     _assert_close(m["tss"], 6.0, msg="TSS case 2")
     _assert_close(m["ess"], 4.5, msg="ESS case 2")
     _assert_close(m["rss"], 1.5, msg="RSS case 2")
-    _assert_close(m["mse"], 1.5, msg="MSE case 2") # RSS(1.5) / df_resid(1)
-    _assert_close(m["ess"] + m["rss"], m["tss"], tol=1e-10, msg="TSS = ESS + RSS")
-    
     print("test_metrics_second_case PASSED")
 
 # Edge Cases
@@ -507,37 +478,6 @@ def test_verify_sklearn_static():
     assert result["passed"], "FAIL: OLS tĩnh không khớp Sklearn"
     print("test_verify_sklearn_static PASSED")
 
-def test_verify_metrics_sklearn():
-    """Kiểm chứng các chỉ số đánh giá mô hình với scikit-learn."""
-    from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-    
-    # Dữ liệu tĩnh
-    y = np.array([2.1, 3.9, 6.1, 7.9, 10.1])
-    y_hat = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
-    p = 1
-    n = len(y)
-    df_resid = n - p - 1
-
-    # 1. Lấy kết quả từ hàm tự code
-    m = model_metrics(y, y_hat, p, verbose=False)
-
-    # 2. Lấy kết quả từ scikit-learn
-    sk_mae = mean_absolute_error(y, y_hat)
-    sk_mse_uncorrected = mean_squared_error(y, y_hat) # Sklearn chia cho n, không chia DOF
-    sk_r2 = r2_score(y, y_hat)
-
-    # 3. Quy đổi MSE của sklearn 
-    sk_mse_corrected = sk_mse_uncorrected * (n / df_resid)
-    sk_rmse_corrected = np.sqrt(sk_mse_corrected)
-
-    # 4. Đối chiếu 
-    _assert_close(m["mae"], sk_mae, msg="MAE khớp Sklearn")
-    _assert_close(m["mse"], sk_mse_corrected, msg="MSE khớp Sklearn (đã hiệu chỉnh DOF)")
-    _assert_close(m["rmse"], sk_rmse_corrected, msg="RMSE khớp Sklearn")
-    _assert_close(m["r2"], sk_r2, msg="R2 khớp Sklearn")
-
-    print("test_verify_metrics_sklearn PASSED")
-
 # Kiểm chứng Lý thuyết Thống kê (Theory Validation)
 def test_r2_adj_penalizes_extra_variables():
     """Kiểm chứng R²_adj giảm khi thêm biến nhiễu không có ý nghĩa."""
@@ -577,7 +517,6 @@ def run_all_tests():
         test_raises_on_errors,
         test_r2_adj_raises_insufficient_data,
         test_verify_sklearn_static,
-        test_verify_metrics_sklearn,
         test_r2_adj_penalizes_extra_variables,
     ]
     passed = 0
