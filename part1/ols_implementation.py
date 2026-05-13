@@ -417,9 +417,12 @@ def test_r2_adj_and_metrics_hand_calc():
     print("test_r2_adj_and_metrics_hand_calc PASSED")
 
 def test_metrics_second_case():
-    """Test Case 2: Kiểm tra model_metrics với định lý Pytago OLS"""
+    """Test Case 2: Kiểm tra model_metrics với định lý Pytago OLS."""
     y = np.array([2.0, 5.0, 5.0])          
     y_hat = np.array([2.5, 4.0, 5.5])      
+    
+    _assert_close(compute_r2(y, y_hat), 0.75, msg="R2 case 2") 
+    _assert_close(compute_r2_adj(y, y_hat, p=1), 0.5, msg="R2_adj case 2")
     
     m = model_metrics(y, y_hat, p=1, verbose=False)
     _assert_close(m["tss"], 6.0, msg="TSS case 2")
