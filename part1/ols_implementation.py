@@ -99,7 +99,8 @@ class OLSRegressor:
     def _prepare_design_matrix(self, X: np.ndarray) -> np.ndarray:
         """Đồng bộ logic thêm intercept cho cả fit và predict."""
         X = np.asarray(X, dtype=float)
-        if X.ndim == 1: X = X.reshape(-1, 1)
+        if X.ndim == 1: 
+            X = X.reshape(-1, 1)
         
         if self.fit_intercept:
             ones = np.ones((X.shape[0], 1))
@@ -388,10 +389,26 @@ def test_ess_known_values():
 
 # Các hàm R2 và Metrics
 def test_r2_known_values():
-    y = np.array([1.0, 3.0])
-    y_hat = np.array([1.5, 2.5])
-    _assert_close(compute_r2(y, y_hat), 0.75, msg="R2 hand calc")
-    _assert_close(compute_r2(y, y), 1.0, msg="R2 perfect")
+    """Test R² = 1 - RSS/TSS với các kích thước mẫu khác nhau."""
+    
+    # Case 1: n = 2
+    y_small = np.array([1.0, 3.0])         # mean = 2, TSS = (-1)² + 1² = 2.0
+    y_hat_small = np.array([1.5, 2.5])     # RSS = 0.5² + (-0.5)² = 0.5
+    _assert_close(compute_r2(y_small, y_hat_small), 0.75, msg="R2 n=2")
+    _assert_close(compute_r2(y_small, y_small), 1.0, msg="R2 perfect n=2")
+
+    # Case 2: n = 4
+    y_large = np.array([2.0, 4.0, 6.0, 8.0])      # mean = 5.0
+    y_hat_large = np.array([2.5, 3.5, 6.5, 7.5])  
+    
+    # Tính tay:
+    # TSS = (-3)² + (-1)² + 1² + 3² = 9 + 1 + 1 + 9 = 20.0
+    # RSS = (-0.5)² + (0.5)² + (-0.5)² + (0.5)² = 0.25 * 4 = 1.0
+    # R²  = 1 - (RSS / TSS) = 1 - (1.0 / 20.0) = 1 - 0.05 = 0.95
+    
+    _assert_close(compute_r2(y_large, y_hat_large), 0.95, msg="R2 n=4")
+    _assert_close(compute_r2(y_large, y_large), 1.0, msg="R2 perfect n=4")
+    
     print("test_r2_known_values PASSED")
 
 def test_r2_adj_and_metrics_hand_calc():
@@ -435,23 +452,44 @@ def test_metrics_second_case():
     _assert_close(m["ess"], 4.5, msg="ESS case 2")
     _assert_close(m["rss"], 1.5, msg="RSS case 2")
     _assert_close(m["mse"], 1.5, msg="MSE case 2") # RSS(1.5) / df_resid(1)
+    _assert_close(m["ess"] + m["rss"], m["tss"], tol=1e-10, msg="TSS = ESS + RSS")
     
     print("test_metrics_second_case PASSED")
 
 # Edge Cases
 def test_raises_on_errors():
-    """Kiểm tra các ngoại lệ cơ bản."""
-    # Đa cộng tuyến
-    try: ols_fit(np.array([[1, 1], [2, 2]]), np.array([1, 2]))
-    except ValueError: pass
+    """Kiểm tra các ngoại lệ (Exception)"""
+    
+    # Case 1: Đa cộng tuyến thực sự (n=5 > k=3, nhưng rank=2 < k)
+    # Chúng ta cần n=5 để df = 5 - 3 = 2 > 0, đảm bảo vượt qua bước check DOF
+    try:
+        col = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        # Tạo ma trận có 2 cột giống hệt nhau
+        X_collinear = np.column_stack([col, col]) 
+        y_dummy = col * 2
+        ols_fit(X_collinear, y_dummy)
+        # Nếu chạy đến đây mà không bị ValueError thì test FAIL
+        assert False, "FAIL: Đa cộng tuyến thực sự phải raise ValueError"
+    except ValueError as e:
+        # Kiểm tra xem có đúng là bị bắt bởi logic rank không
+        assert "hạng" in str(e).lower() or "đa cộng tuyến" in str(e).lower()
+        print("Sub-case: Đa cộng tuyến thực sự PASSED")
 
-    # TSS = 0
-    try: compute_r2(np.array([4, 4]), np.array([1, 2]))
-    except ValueError: pass
+    # Case 2: TSS = 0 (y là hằng số)
+    try:
+        compute_r2(np.array([4.0, 4.0]), np.array([1.0, 2.0]))
+        assert False, "FAIL: TSS=0 phải raise ValueError"
+    except ValueError:
+        print("Sub-case: TSS=0 PASSED")
 
-    # Thiếu DOF (n<=k)
-    try: ols_fit(np.array([[1, 2], [3, 4]]), np.array([1, 2]))
-    except ValueError: pass
+    # Case 3: Thiếu bậc tự do (n=2, k=3 -> df = -1)
+    try:
+        ols_fit(np.array([[1.0, 2.0], [3.0, 4.0]]), np.array([1.0, 2.0]))
+        assert False, "FAIL: df<=0 phải raise ValueError"
+    except ValueError as e:
+        assert "bậc tự do" in str(e).lower()
+        print("Sub-case: Thiếu bậc tự do (n<=k) PASSED")
+
     print("test_raises_on_errors PASSED")
 
 def test_r2_adj_raises_insufficient_data():
@@ -468,6 +506,89 @@ def test_verify_sklearn_static():
     result = verify_with_sklearn(X, y)
     assert result["passed"], "FAIL: OLS tĩnh không khớp Sklearn"
     print("test_verify_sklearn_static PASSED")
+
+def test_verify_metrics_sklearn():
+    """Kiểm chứng các chỉ số đánh giá mô hình với scikit-learn."""
+    from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+    
+    # Dữ liệu tĩnh
+    y = np.array([2.1, 3.9, 6.1, 7.9, 10.1])
+    y_hat = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
+    p = 1
+    n = len(y)
+    df_resid = n - p - 1
+
+    # 1. Lấy kết quả từ hàm tự code
+    m = model_metrics(y, y_hat, p, verbose=False)
+
+    # 2. Lấy kết quả từ scikit-learn
+    sk_mae = mean_absolute_error(y, y_hat)
+    sk_mse_uncorrected = mean_squared_error(y, y_hat) # Sklearn chia cho n, không chia DOF
+    sk_r2 = r2_score(y, y_hat)
+
+    # 3. Quy đổi MSE của sklearn 
+    sk_mse_corrected = sk_mse_uncorrected * (n / df_resid)
+    sk_rmse_corrected = np.sqrt(sk_mse_corrected)
+
+    # 4. Đối chiếu 
+    _assert_close(m["mae"], sk_mae, msg="MAE khớp Sklearn")
+    _assert_close(m["mse"], sk_mse_corrected, msg="MSE khớp Sklearn (đã hiệu chỉnh DOF)")
+    _assert_close(m["rmse"], sk_rmse_corrected, msg="RMSE khớp Sklearn")
+    _assert_close(m["r2"], sk_r2, msg="R2 khớp Sklearn")
+
+    print("test_verify_metrics_sklearn PASSED")
+
+# Kiểm chứng Lý thuyết Thống kê (Theory Validation)
+def test_r2_adj_penalizes_extra_variables():
+    """Kiểm chứng R²_adj giảm khi thêm biến nhiễu không có ý nghĩa."""
+    # Dữ liệu gốc (n=5, p=1)
+    X_base = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+    y = np.array([2.1, 3.9, 6.1, 7.9, 10.1]) 
+    
+    model_base = OLSRegressor().fit(X_base, y)
+    r2_adj_base = compute_r2_adj(y, model_base.predict(X_base), p=1)
+    
+    # Thêm cột nhiễu được thiết kế đặc biệt (vuông góc với phần dư của X_base)
+    noise_col = np.array([[0.0], [1.0], [0.0], [-1.0], [0.0]])
+    X_noise = np.hstack([X_base, noise_col])
+    
+    model_noise = OLSRegressor().fit(X_noise, y)
+    r2_adj_noise = compute_r2_adj(y, model_noise.predict(X_noise), p=2)
+    
+    # Lúc này R² thông thường đứng im, nhưng do p tăng (từ 1 lên 2) nên R²_adj BẮT BUỘC giảm
+    assert r2_adj_noise < r2_adj_base, f"FAIL: R²_adj không giảm! Base={r2_adj_base:.4f}, Noise={r2_adj_noise:.4f}"
+    print("test_r2_adj_penalizes_extra_variables PASSED")
+
+def test_sigma2_unbiased():
+    """
+    Kiểm chứng E[σ̂²] = σ² qua mô phỏng Monte Carlo (Định lý Gauss-Markov).
+    Minh họa rằng ước lượng phương sai nhiễu chia cho (n-k) là không chệch.
+    """
+    np.random.seed(42) # Cố định seed để test luôn pass
+    n, p = 50, 2
+    true_sigma2 = 4.0  # Phương sai nhiễu thực tế (Variance) là 4.0
+    X = np.random.randn(n, p)
+    true_beta = np.array([1.5, -2.0])
+    
+    sigma2_hats = []
+    # Lặp 1000 lần mô phỏng
+    for _ in range(1000):
+        # Tạo nhiễu ε với mean=0, variance=4 (std=2)
+        error = np.sqrt(true_sigma2) * np.random.randn(n)
+        # y = b0 + Xb + ε (giả sử b0 = 3.0)
+        y = 3.0 + X @ true_beta + error
+        
+        # Fit OLS
+        res = ols_fit(X, y)
+        sigma2_hats.append(res["sigma2_hat"])
+        
+    # Trung bình của các ước lượng phải xấp xỉ true_sigma2 (4.0)
+    mean_sigma2_hat = float(np.mean(sigma2_hats))
+    
+    # Sai số cho phép 0.1 do tính chất ngẫu nhiên của Monte Carlo
+    _assert_close(mean_sigma2_hat, true_sigma2, tol=0.1, 
+                  msg=f"Monte Carlo FAIL: E[σ̂²] = {mean_sigma2_hat:.4f} != {true_sigma2}")
+    print(f"test_sigma2_unbiased PASSED (E[σ̂²] = {mean_sigma2_hat:.4f})")
 
 def run_all_tests():
     print("        CHẠY TOÀN BỘ UNIT TESTS (STATIC DATA)")
@@ -486,7 +607,10 @@ def run_all_tests():
         test_metrics_second_case,
         test_raises_on_errors,
         test_r2_adj_raises_insufficient_data,
-        test_verify_sklearn_static
+        test_verify_sklearn_static,
+        test_verify_metrics_sklearn,
+        test_r2_adj_penalizes_extra_variables,
+        test_sigma2_unbiased
     ]
     passed = 0
     failed = 0
