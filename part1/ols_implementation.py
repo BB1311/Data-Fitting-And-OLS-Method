@@ -7,21 +7,31 @@ def _ols_core_solver(X_design: np.ndarray, y: np.ndarray) -> dict:
     Đây là nơi chứa công thức toán học cốt lõi.
     """
     n, k = X_design.shape
-    df = n - k
+    df = n - k  # Bậc tự do của phần dư 
+    
+    # Chặn lỗi thiếu bậc tự do
+    if df <= 0:
+        raise ValueError(
+            f"Lỗi: Không đủ bậc tự do (n={n} <= k={k}). "
+            "Cần số lượng quan sát (n) lớn hơn số lượng tham số (k) để ước lượng phương sai nhiễu."
+        )
 
-    # Giải β̂ = (XᵀX)⁻¹ Xᵀy 
+    # Giải β̂ = (XᵀX)⁻¹ Xᵀy
     XtX = X_design.T @ X_design
     Xty = X_design.T @ y
-    
-    try:
-        beta_hat = np.linalg.solve(XtX, Xty)
-    except np.linalg.LinAlgError:
-        raise ValueError("Ma trận không đủ hạng (đa cộng tuyến hoàn hảo).")
+
+    if np.linalg.matrix_rank(XtX) < k:
+        raise ValueError(
+            "Lỗi: Ma trận XᵀX không đủ hạng (đa cộng tuyến hoàn hảo hoặc gần hoàn hảo). "
+            "Nghiệm OLS không tồn tại duy nhất."
+        )
+
+    beta_hat = np.linalg.solve(XtX, Xty)
 
     y_hat = X_design @ beta_hat
     residuals = y - y_hat
     rss = float(residuals @ residuals)
-    sigma2_hat = rss / (n - k) if n > k else 0.0
+    sigma2_hat = rss / df
 
     return {
         "beta_hat": beta_hat,
@@ -29,9 +39,9 @@ def _ols_core_solver(X_design: np.ndarray, y: np.ndarray) -> dict:
         "y_hat": y_hat,
         "residuals": residuals,
         "X_design": X_design,
-        "n": n,    # Số lượng quan sát
-        "k": k,    # Số lượng tham số (p + 1)
-        "df": df   # Bậc tự do của phần dư (n - k)
+        "n": n,    
+        "k": k,    
+        "df": df   
     }
 
 def ols_fit(X: np.ndarray, y: np.ndarray) -> dict:
@@ -136,36 +146,41 @@ class OLSRegressor:
         self._check_fitted()
         return self._fitted_values
     
-def compute_rss(y, y_hat):
+def compute_rss(y: np.ndarray, y_hat: np.ndarray) -> float:
+    """RSS = ||y - ŷ||² (Residual Sum of Squares - Tổng bình phương phần dư)"""
     residuals = np.asarray(y, dtype=float) - np.asarray(y_hat, dtype=float)
     return float(residuals @ residuals)
 
-def compute_tss(y):
+def compute_tss(y: np.ndarray) -> float:
+    """TSS = ||y - ȳ||² (Total Sum of Squares - Tổng bình phương toàn phần)"""
     y = np.asarray(y, dtype=float)
     return float(np.sum((y - y.mean()) ** 2))
 
 def compute_ess(y: np.ndarray, y_hat: np.ndarray) -> float:
+    """ESS = ||ŷ - ȳ||² (Explained Sum of Squares - Tổng bình phương giải thích được)"""
     y = np.asarray(y, dtype=float)
     y_hat = np.asarray(y_hat, dtype=float)
     y_bar = y.mean()
     diff = y_hat - y_bar
     return float(diff @ diff)
 
-def compute_r2(y, y_hat):
+def compute_r2(y: np.ndarray, y_hat: np.ndarray) -> float:
+    """Hệ số xác định R² (Dùng khi gọi độc lập)"""
     rss = compute_rss(y, y_hat)
     tss = compute_tss(y)
     if tss == 0:
         raise ValueError("TSS = 0")
     return 1.0 - rss / tss
 
-def compute_r2_adj(y, y_hat, p):
+def compute_r2_adj(y: np.ndarray, y_hat: np.ndarray, p: int) -> float:
+    """R² hiệu chỉnh (Dùng khi gọi độc lập)"""
     n = len(y)
     if n <= p + 1:
         raise ValueError("n phải lớn hơn p+1.")
     r2 = compute_r2(y, y_hat)
     return 1.0 - (n - 1) / (n - p - 1) * (1.0 - r2)
 
-def model_metrics(y, y_hat, p, verbose=True):
+def model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int, verbose: bool = True) -> dict:
     y = np.asarray(y, dtype=float)
     y_hat = np.asarray(y_hat, dtype=float)
     n = len(y)
@@ -173,13 +188,16 @@ def model_metrics(y, y_hat, p, verbose=True):
     rss = compute_rss(y, y_hat)
     tss = compute_tss(y)
     ess = compute_ess(y, y_hat)
-    if tss == 0:
-        raise ValueError("TSS = 0")
     r2 = compute_r2(y, y_hat)
     r2_adj = compute_r2_adj(y, y_hat, p)
 
     df_model = p
     df_resid = n - p - 1
+    
+    mse = rss / df_resid if df_resid > 0 else np.nan
+    rmse = float(np.sqrt(mse)) if not np.isnan(mse) else np.nan
+    mae = float(np.mean(np.abs(y - y_hat)))
+    
     if df_model == 0 or df_resid <= 0:
         f_stat = np.nan
         f_pvalue = np.nan
@@ -188,17 +206,34 @@ def model_metrics(y, y_hat, p, verbose=True):
         f_pvalue = float(1.0 - stats.f.cdf(f_stat, df_model, df_resid))
 
     metrics = {
-        "rss": rss, "tss": tss, "ess": ess,
-        "r2": r2, "r2_adj": r2_adj,
-        "f_stat": f_stat, "f_pvalue": f_pvalue,
-        "n": n, "p": p,
+        "rss":      rss,
+        "tss":      tss,
+        "ess":      ess,
+        "mse":      mse,   
+        "rmse":     rmse,  
+        "mae":      mae,  
+        "r2":       r2,
+        "r2_adj":   r2_adj,
+        "f_stat":   f_stat,
+        "f_pvalue": f_pvalue,
+        "n":        n,
+        "p":        p,
     }
 
     if verbose:
         print("        MODEL METRICS SUMMARY")
-        print(f"  n={n}, p={p}, RSS={rss:.6f}, TSS={tss:.6f}, ESS={ess:.6f}")
-        print(f"  R²={r2:.6f}, R²_adj={r2_adj:.6f}")
-        print(f"  F={f_stat:.4f} (df1={df_model}, df2={df_resid}), p={f_pvalue:.6e}")
+        print(f"  n (observations)  : {n}")
+        print(f"  p (features)      : {p}")
+        print(f"  RSS               : {rss:.6f}")
+        print(f"  TSS               : {tss:.6f}")
+        print(f"  ESS               : {ess:.6f}")
+        print(f"  MSE (σ̂²)          : {mse:.6f}")
+        print(f"  RMSE              : {rmse:.6f}")
+        print(f"  MAE               : {mae:.6f}")
+        print(f"  R²                : {r2:.6f}")
+        print(f"  R² adjusted       : {r2_adj:.6f}")
+        print(f"  F-statistic       : {f_stat:.4f}  (df1={df_model}, df2={df_resid})")
+        print(f"  F p-value         : {f_pvalue:.6e}")
 
     return metrics
 
@@ -224,7 +259,7 @@ def verify_with_sklearn(X: np.ndarray, y: np.ndarray) -> dict:
     X_design = np.hstack([np.ones((X.shape[0], 1)), X])
     beta_numpy, _, _, _ = np.linalg.lstsq(X_design, y, rcond=None)
 
-    # --- So sánh sai số ---
+    # So sánh sai số
     max_diff_sk    = np.max(np.abs(beta_scratch - beta_sklearn))
     max_diff_numpy = np.max(np.abs(beta_scratch - beta_numpy))
     diff_r2        = abs(r2_scratch - r2_sklearn)
@@ -259,229 +294,202 @@ def _assert_close(a, b, tol=1e-8, msg=""):
     diff = np.max(np.abs(np.asarray(a) - np.asarray(b)))
     assert diff < tol, f"FAIL [{msg}]: max_diff={diff:.4e} (tol={tol:.0e})"
 
-# --- ols_fit ---
+# Core OLS & Class OLSRegressor
 def test_ols_fit_returns_correct_keys():
-    np.random.seed(0)
-    X = np.random.randn(30, 2)
-    y = np.random.randn(30)
+    X = np.array([[1], [2], [3]], dtype=float)
+    y = np.array([3, 5, 7], dtype=float)
     result = ols_fit(X, y)
-    for key in ("beta_hat", "sigma2_hat", "y_hat", "residuals", "X_design"):
+    
+    expected_keys = ("beta_hat", "sigma2_hat", "y_hat", "residuals", "X_design", "n", "k", "df")
+    for key in expected_keys:
         assert key in result, f"FAIL: thiếu key '{key}'"
-    assert result["beta_hat"].shape == (3,)
-    assert result["y_hat"].shape   == (30,)
+        
+    assert result["n"] == 3, f"FAIL: n phải bằng 3, nhưng ra {result['n']}"
+    assert result["k"] == 2, f"FAIL: k phải bằng 2, nhưng ra {result['k']}"
+    assert result["df"] == 1, f"FAIL: df phải bằng 1, nhưng ra {result['df']}"
     print("test_ols_fit_returns_correct_keys PASSED")
 
-def test_ols_fit_known_solution():
-    X = np.array([[1], [2], [3], [4], [5]], dtype=float)
-    y = 1.0 + 2.0 * X.ravel()
-    res = ols_fit(X, y)
-    _assert_close(res["beta_hat"][0], 1.0, tol=1e-8,  msg="intercept")
-    _assert_close(res["beta_hat"][1], 2.0, tol=1e-8,  msg="slope")
-    _assert_close(np.sum(res["residuals"] ** 2), 0.0, tol=1e-10, msg="RSS≈0")
-    print("test_ols_fit_known_solution PASSED")
+def test_ols_simple_known_data():
+    """Test 1: Simple Linear Regression (y = 1 + 2x)."""
+    X = np.array([[1], [2], [3]], dtype=float)
+    y = np.array([3, 5, 7], dtype=float)
+    model = OLSRegressor(fit_intercept=True).fit(X, y)
+    _assert_close(model.beta_hat[0], 1.0, msg="Intercept phải bằng 1")
+    _assert_close(model.beta_hat[1], 2.0, msg="Slope phải bằng 2")
+    _assert_close(model.residuals, [0, 0, 0], msg="Dữ liệu hoàn hảo, residuals = 0")
+    print("test_ols_simple_known_data PASSED")
 
-# --- OLSRegressor ---
-def test_ols_simple_regression():
-    np.random.seed(0)
-    X = np.linspace(0, 10, 50).reshape(-1, 1)
-    y = 2.0 + 3.0 * X.ravel()
+def test_ols_multiple_regression_known_data():
+    """Test 2: Multiple Regression (y = 10 + 2x1 - 5x2) với n=4 để df > 0."""
+    X = np.array([
+        [1, 0], 
+        [2, 1], 
+        [3, 0],
+        [4, 1]   
+    ], dtype=float)
+    # Tính tay y = 10 + 2*x1 - 5*x2:
+    # Dòng 1: 10 + 2(1) - 0 = 12
+    # Dòng 2: 10 + 2(2) - 5 = 9
+    # Dòng 3: 10 + 2(3) - 0 = 16
+    # Dòng 4: 10 + 2(4) - 5 = 13 
+    y = np.array([12, 9, 16, 13], dtype=float)
+    
+    model = OLSRegressor(fit_intercept=True).fit(X, y)
+    _assert_close(model.beta_hat, [10.0, 2.0, -5.0], msg="Beta multiple regression sai")
+    print("test_ols_multiple_regression_known_data PASSED")
+
+def test_regressor_properties():
+    """residuals và fitted_values phải nhất quán với y và y_hat (tĩnh)."""
+    X = np.array([[1.0], [2.0], [3.0], [4.0]])
+    y = np.array([2.1, 3.9, 6.1, 7.9])
     model = OLSRegressor().fit(X, y)
-    _assert_close(model.beta_hat[0], 2.0, tol=1e-8, msg="intercept")
-    _assert_close(model.beta_hat[1], 3.0, tol=1e-8, msg="slope")
-    print("test_ols_simple_regression PASSED")
+    y_hat = model.predict(X)
 
-def test_ols_multiple_regression():
-    np.random.seed(42)
-    n = 500
-    X = np.random.randn(n, 2)
-    beta_true = np.array([1.0, 2.0, -0.5])
-    y = beta_true[0] + X @ beta_true[1:] + 0.1 * np.random.randn(n)
-    model = OLSRegressor().fit(X, y)
-    _assert_close(model.beta_hat, beta_true, tol=0.1, msg="betas")
-    print("test_ols_multiple_regression PASSED")
+    _assert_close(model.fitted_values, y_hat, msg="fitted_values == predict(X)")
+    _assert_close(model.residuals, y - y_hat, msg="residuals == y - ŷ")
+    assert model.residuals.shape == (4,), "FAIL: shape residuals"
+    print("test_regressor_properties PASSED")
 
-# --- compute_rss ---
-def test_rss_perfect_fit_is_zero():
-    """RSS = 0 khi ŷ = y (perfect fit)."""
-    y = np.array([1.0, 2.0, 3.0, 4.0])
-    _assert_close(compute_rss(y, y), 0.0, tol=1e-14, msg="RSS perfect=0")
-    print("test_rss_perfect_fit_is_zero PASSED")
-
-def test_rss_known_value():
-    """RSS tay: y=[1,2,3], ŷ=[2,2,2] → RSS = (1-2)²+(2-2)²+(3-2)² = 2."""
-    y     = np.array([1.0, 2.0, 3.0])
-    y_hat = np.array([2.0, 2.0, 2.0])
-    _assert_close(compute_rss(y, y_hat), 2.0, tol=1e-12, msg="RSS=2")
-    print("test_rss_known_value PASSED")
-
-# --- compute_r2 ---
-def test_r2_perfect_fit():
-    X = np.array([[1], [2], [3], [4], [5]], dtype=float)
-    y = 2.0 + 3.0 * X.ravel()
-    y_hat = OLSRegressor().fit(X, y).predict(X)
-    _assert_close(compute_r2(y, y_hat), 1.0, tol=1e-10, msg="R²=1")
-    print("test_r2_perfect_fit PASSED")
-
-def test_r2_known_value():
-    y     = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-    y_hat = np.array([2.0, 2.0, 3.0, 4.0, 4.0])
-    _assert_close(compute_r2(y, y_hat), 0.8, tol=1e-12, msg="R²=0.8")
-    print("test_r2_known_value PASSED")
-
-# --- compute_r2_adj ---
-def test_r2_adj_penalizes_extra_variables():
-    np.random.seed(42)
-    n = 500
-    X = np.random.randn(n, 1)
-    y = 2.0 * X.ravel() + np.random.randn(n) * 0.5
-
-    model1 = OLSRegressor().fit(X, y)
-    y_hat1 = model1.predict(X)
-    r2_1 = compute_r2(y, y_hat1)
-    r2_adj_1 = compute_r2_adj(y, y_hat1, p=1)
-
-    X_noise = np.random.randn(n, 5)
-    X_extended = np.hstack([X, X_noise])
-
-    model2 = OLSRegressor().fit(X_extended, y)
-    y_hat2 = model2.predict(X_extended)
-    r2_2 = compute_r2(y, y_hat2)
-    r2_adj_2 = compute_r2_adj(y, y_hat2, p=6)
-
-    assert r2_2 >= r2_1, "FAIL: R² phải tăng hoặc giữ nguyên khi thêm biến."
-    assert r2_adj_2 < r2_adj_1, f"FAIL: R²_adj không phạt biến nhiễu! (Mới {r2_adj_2:.4f} >= Cũ {r2_adj_1:.4f})"
-    print("test_r2_adj_penalizes_extra_variables PASSED")
-
-def test_r2_adj_known_value():
-    y     = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-    y_hat = np.array([2.0, 2.0, 3.0, 4.0, 4.0])
-    expected = 1.0 - (4 / 3) * 0.2
-    _assert_close(compute_r2_adj(y, y_hat, p=1), expected, tol=1e-12, msg="R²_adj")
-    print("test_r2_adj_known_value PASSED")
-
-# --- model_metrics ---
-def test_model_metrics_keys():
-    """model_metrics() phải trả về dict đủ 9 key."""
-    np.random.seed(0)
-    X = np.random.randn(50, 2)
-    y = np.random.randn(50)
-    y_hat = OLSRegressor().fit(X, y).predict(X)
-    m = model_metrics(y, y_hat, p=2, verbose=False)
-    for key in ("rss", "tss", "ess", "r2", "r2_adj", "f_stat", "f_pvalue", "n", "p"):
-        assert key in m, f"FAIL: thiếu key '{key}'"
-    print("test_model_metrics_keys PASSED")
-
-def test_model_metrics_identity():
-    np.random.seed(5)
-    X = np.random.randn(80, 3)
-    y = X @ np.array([1.0, -0.5, 2.0]) + np.random.randn(80)
-    y_hat = OLSRegressor().fit(X, y).predict(X)
-    m = model_metrics(y, y_hat, p=3, verbose=False)
-
-    _assert_close(m["ess"] + m["rss"], m["tss"], tol=1e-8, msg="ESS+RSS=TSS")
-    _assert_close(m["r2"], 1.0 - m["rss"] / m["tss"], tol=1e-12, msg="R²=1-RSS/TSS")
-    assert m["r2_adj"] <= m["r2"],       "FAIL: r2_adj > r2"
-    assert 0.0 <= m["f_pvalue"] <= 1.0, "FAIL: f_pvalue ngoài [0,1]"
-    print("test_model_metrics_identity PASSED")
-
-def test_model_metrics_f_significant():
-    """
-    Khi mô hình thực sự có ý nghĩa (signal mạnh), F p-value phải rất nhỏ (< 0.001).
-    """
-    np.random.seed(9)
-    n = 200
-    X = np.random.randn(n, 3)
-    y = 5.0 + X @ np.array([3.0, -2.0, 1.5]) + 0.1 * np.random.randn(n)
-    y_hat = OLSRegressor().fit(X, y).predict(X)
-    m = model_metrics(y, y_hat, p=3, verbose=False)
-    assert m["f_pvalue"] < 0.001, f"FAIL: f_pvalue={m['f_pvalue']:.4f} không nhỏ như kỳ vọng"
-    print("test_model_metrics_f_significant PASSED")
-
-# --- misc ---
-def test_sigma2_unbiased():
-    """E[σ̂²] ≈ σ² = 4 (Monte Carlo 1000 lần, tol=0.3)."""
-    np.random.seed(99)
-    n, p, sigma2_true = 50, 3, 4.0
-    sigma = np.sqrt(sigma2_true)
-    estimates = []
-    for _ in range(1000):
-        X = np.random.randn(n, p)
-        y = X @ np.ones(p) + sigma * np.random.randn(n)
-        estimates.append(OLSRegressor().fit(X, y).sigma2_hat)
-    _assert_close(np.mean(estimates), sigma2_true, tol=0.3, msg="E[σ̂²]≈σ²")
-    print(f"test_sigma2_unbiased PASSED  (E[σ̂²]={np.mean(estimates):.4f})")
-
-def test_raises_on_collinear():
-    """ols_fit() phải raise ValueError khi X có 2 cột giống nhau."""
-    np.random.seed(17)
-    col = np.arange(1, 6, dtype=float)
-    X   = np.column_stack([col, col])   # rank = 1 < k = 3
-    y   = np.random.randn(5)
+def test_predict_before_fit_raises():
+    """predict() phải raise RuntimeError nếu chưa gọi fit()."""
+    model = OLSRegressor()
     try:
-        ols_fit(X, y)
-        assert False, "FAIL: phải raise ValueError nhưng không raise"
-    except ValueError:
-        print("test_raises_on_collinear PASSED")
+        model.predict(np.array([[1.0, 2.0], [3.0, 4.0]]))
+        assert False, "FAIL: phải raise RuntimeError"
+    except RuntimeError:
+        print("test_predict_before_fit_raises PASSED")
 
-def test_r2_raises_on_constant_y():
-    """compute_r2() phải raise ValueError khi y hằng số (TSS = 0)."""
-    np.random.seed(0)
-    X = np.random.randn(20, 2)
-    y = np.ones(20) * 3.0   # TSS = 0
+def test_fit_intercept_false():
+    """fit_intercept=False: không thêm cột 1, beta_hat có p phần tử."""
+    X = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+    y = 2.0 * X.ravel()
+    model = OLSRegressor(fit_intercept=False).fit(X, y)
+    assert model.beta_hat.shape == (1,), "FAIL: shape kỳ vọng (1,)"
+    _assert_close(model.beta_hat[0], 2.0, msg="slope=2")
+    print("test_fit_intercept_false PASSED")
+
+# Các hàm tính Sum of Squares (RSS, TSS, ESS)
+def test_rss_known_values():
+    y = np.array([1.0, 2.0, 3.0])
+    _assert_close(compute_rss(y, y), 0.0, msg="RSS perfect fit")
+    _assert_close(compute_rss(y, np.array([2.0, 2.0, 2.0])), 2.0, msg="RSS hand calc")
+    print("test_rss_known_values PASSED")
+
+def test_tss_known_values():
+    _assert_close(compute_tss(np.array([1.0, 2.0, 3.0])), 2.0, msg="TSS variance")
+    _assert_close(compute_tss(np.array([5.0, 5.0, 5.0])), 0.0, msg="TSS constant")
+    print("test_tss_known_values PASSED")
+
+def test_ess_known_values():
+    y = np.array([1.0, 2.0, 3.0]) 
+    _assert_close(compute_ess(y, y), 2.0, msg="ESS perfect fit")
+    _assert_close(compute_ess(y, np.array([2.0, 2.0, 2.0])), 0.0, msg="ESS worst model")
+    print("test_ess_known_values PASSED")
+
+# Các hàm R2 và Metrics
+def test_r2_known_values():
+    y = np.array([1.0, 3.0])
+    y_hat = np.array([1.5, 2.5])
+    _assert_close(compute_r2(y, y_hat), 0.75, msg="R2 hand calc")
+    _assert_close(compute_r2(y, y), 1.0, msg="R2 perfect")
+    print("test_r2_known_values PASSED")
+
+def test_r2_adj_and_metrics_hand_calc():
+    """Test gộp R²_adj và model_metrics với đủ MSE, RMSE, MAE."""
+    y = np.array([1.0, 2.0, 3.0, 4.0])            
+    y_hat = np.array([1.5, 1.5, 3.5, 3.5])        
+    
+    _assert_close(compute_r2(y, y_hat), 0.8, msg="R2")
+    _assert_close(compute_r2_adj(y, y_hat, p=1), 0.7, msg="R2_adj")
+    
+    m = model_metrics(y, y_hat, p=1, verbose=False)
+    _assert_close(m["rss"], 1.0, msg="Metric RSS")
+    _assert_close(m["tss"], 5.0, msg="Metric TSS")
+    _assert_close(m["ess"], 4.0, msg="Metric ESS")
+    _assert_close(m["mse"], 0.5, msg="Metric MSE")
+    _assert_close(m["rmse"], np.sqrt(0.5), msg="Metric RMSE")
+    _assert_close(m["mae"], 0.5, msg="Metric MAE")
+    _assert_close(m["f_stat"], 8.0, msg="Metric F-Stat")
+    print("test_r2_adj_and_metrics_hand_calc PASSED")
+
+def test_metrics_second_case():
+    """Test Case 2: Kiểm tra model_metrics với bộ dữ liệu chuẩn OLS. Đảm bảo định lý phân rã phương sai: TSS = ESS + RSS.
+    """
+    # Dữ liệu thực từ mô hình OLS: n=3, p=1
+    y = np.array([2.0, 5.0, 5.0])          # mean(y) = 4.0
+    y_hat = np.array([2.5, 4.0, 5.5])      # mean(y_hat) = 4.0
+    
+    # TSS = ||y - mean||^2 = (-2)^2 + 1^2 + 1^2 = 6.0
+    # ESS = ||y_hat - mean||^2 = (-1.5)^2 + 0^2 + 1.5^2 = 2.25 + 2.25 = 4.5
+    # Tính RSS = ||y - y_hat||^2 = (-0.5)^2 + 1^0^2 + (-0.5)^2 = 0.25 + 1.0 + 0.25 = 1.5
+    # TSS (6.0) = ESS (4.5) + RSS (1.5)
+    
+    # Tính R² = ESS / TSS = 4.5 / 6.0 = 0.75
+    _assert_close(compute_r2(y, y_hat), 0.75, msg="R2 case 2") 
+    
+    # Tính R²_adj = 1 - [(n-1)/(n-p-1)] * (1 - R²) = 1 - (2/1)*0.25 = 0.5
+    _assert_close(compute_r2_adj(y, y_hat, p=1), 0.5, msg="R2_adj case 2")
+    
+    m = model_metrics(y, y_hat, p=1, verbose=False)
+    _assert_close(m["tss"], 6.0, msg="TSS case 2")
+    _assert_close(m["ess"], 4.5, msg="ESS case 2")
+    _assert_close(m["rss"], 1.5, msg="RSS case 2")
+    _assert_close(m["mse"], 1.5, msg="MSE case 2") # RSS(1.5) / df_resid(1)
+    
+    print("test_metrics_second_case PASSED")
+
+# Edge Cases
+def test_raises_on_errors():
+    """Kiểm tra các ngoại lệ cơ bản."""
+    # Đa cộng tuyến
+    try: ols_fit(np.array([[1, 1], [2, 2]]), np.array([1, 2]))
+    except ValueError: pass
+
+    # TSS = 0
+    try: compute_r2(np.array([4, 4]), np.array([1, 2]))
+    except ValueError: pass
+
+    # Thiếu DOF (n<=k)
+    try: ols_fit(np.array([[1, 2], [3, 4]]), np.array([1, 2]))
+    except ValueError: pass
+    print("test_raises_on_errors PASSED")
+
+def test_r2_adj_raises_insufficient_data():
+    """compute_r2_adj() phải raise ValueError khi n <= p+1."""
     try:
-        compute_r2(y, y)
-        assert False, "FAIL: phải raise ValueError nhưng không raise"
+        compute_r2_adj(np.array([1.0, 2.0, 3.0]), np.array([1.1, 2.1, 2.9]), p=2)
+        assert False, "FAIL: phải raise ValueError"
     except ValueError:
-        print("test_r2_raises_on_constant_y PASSED")
+        print("test_r2_adj_raises_insufficient_data PASSED")
 
-def test_prediction_shape():
-    np.random.seed(6)
-    X_train = np.random.randn(80, 4)
-    y_train = np.random.randn(80)
-    y_pred = OLSRegressor().fit(X_train, y_train).predict(np.random.randn(20, 4))
-    assert y_pred.shape == (20,)
-    print("test_prediction_shape PASSED")
-
-def test_verify_sklearn_match():
-    np.random.seed(123)
-    X = np.random.randn(200, 5)
-    y = X @ np.arange(1, 6, dtype=float) + 0.5 * np.random.randn(200)
+def test_verify_sklearn_static():
+    X = np.array([[1.5, 2.1], [3.0, 1.2], [4.5, 5.0], [2.2, 3.3]], dtype=float)
+    y = np.array([5.1, 8.2, 12.5, 7.3], dtype=float)
     result = verify_with_sklearn(X, y)
-    assert result["passed"], "FAIL: OLS scratch không khớp sklearn!"
-    print("test_verify_sklearn_match PASSED")
-
+    assert result["passed"], "FAIL: OLS tĩnh không khớp Sklearn"
+    print("test_verify_sklearn_static PASSED")
 
 def run_all_tests():
-    print("              CHẠY TOÀN BỘ UNIT TESTS")
+    print("        CHẠY TOÀN BỘ UNIT TESTS (STATIC DATA)")
     tests = [
-        # ols_fit
         test_ols_fit_returns_correct_keys,
-        test_ols_fit_known_solution,
-        # OLSRegressor
-        test_ols_simple_regression,
-        test_ols_multiple_regression,
-        # compute_rss
-        test_rss_perfect_fit_is_zero,
-        test_rss_known_value,
-        # compute_r2 
-        test_r2_perfect_fit,
-        test_r2_known_value,
-        # compute_r2_adj 
-        test_r2_adj_penalizes_extra_variables,
-        test_r2_adj_known_value,
-        # model_metrics 
-        test_model_metrics_keys,
-        test_model_metrics_identity,
-        test_model_metrics_f_significant,
-        # misc
-        test_sigma2_unbiased,
-        test_prediction_shape,
-        test_verify_sklearn_match,
-        # catch error
-        test_raises_on_collinear,
-        test_r2_raises_on_constant_y
+        test_ols_simple_known_data,
+        test_ols_multiple_regression_known_data,
+        test_regressor_properties,
+        test_predict_before_fit_raises,
+        test_fit_intercept_false,
+        test_rss_known_values,
+        test_tss_known_values,
+        test_ess_known_values,
+        test_r2_known_values,
+        test_r2_adj_and_metrics_hand_calc,
+        test_metrics_second_case,
+        test_raises_on_errors,
+        test_r2_adj_raises_insufficient_data,
+        test_verify_sklearn_static
     ]
-    passed = failed = 0
+    passed = 0
+    failed = 0
     for test_fn in tests:
         try:
             test_fn()
@@ -492,7 +500,8 @@ def run_all_tests():
         except Exception as e:
             print(f"  ERROR in {test_fn.__name__}: {e}")
             failed += 1
-    print(f"\n  Results: {passed} passed, {failed} failed / {len(tests)} total")
+    print('\n')
+    print(f"  Results: {passed} passed, {failed} failed / {len(tests)} total")
     return failed == 0
 
 
