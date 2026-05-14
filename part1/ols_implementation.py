@@ -44,6 +44,7 @@ def _ols_core_solver(X_design: np.ndarray, y: np.ndarray) -> dict:
         "df": df   
     }
 
+
 def ols_fit(X: np.ndarray, y: np.ndarray) -> dict:
     """
     Tính nghiệm bằng phương pháp Bình phương tối thiểu (OLS) và ước lượng phương sai nhiễu.
@@ -66,7 +67,7 @@ def ols_fit(X: np.ndarray, y: np.ndarray) -> dict:
         - "sigma2_hat" (float): Ước lượng không chệch của phương sai nhiễu.
         - "y_hat" (np.ndarray): Vector giá trị dự đoán ŷ = Xβ̂.
         - "residuals" (np.ndarray): Vector phần dư ε̂ = y - ŷ.
-        - "X_design" (np.ndarray): Ma trận thiết kế đã thêm cột 1, kích thước (n, p+1).
+        - "X_design" (np.ndarray): Ma trận design đã thêm cột 1, kích thước (n, p+1).
         - "n" (int): Số lượng quan sát.
         - "k" (int): Số lượng tham số mô hình (bao gồm cả hệ số chặn).
         - "df" (int): Bậc tự do của phần dư (n - k).
@@ -74,13 +75,14 @@ def ols_fit(X: np.ndarray, y: np.ndarray) -> dict:
     Raises
     ------
     ValueError
-        Nếu ma trận thiết kế không có hạng đầy đủ (rank < p + 1), thường do lỗi đa cộng tuyến hoàn hảo.
+        Nếu ma trận design không có hạng đầy đủ (rank < p + 1), thường do lỗi đa cộng tuyến hoàn hảo.
     """
     X = np.asarray(X, dtype=float)
     ones = np.ones((X.shape[0], 1))
     X_design = np.hstack([ones, X.reshape(X.shape[0], -1)])
     
     return _ols_core_solver(X_design, y)
+
 
 class OLSRegressor:
     def __init__(self, fit_intercept: bool = True):
@@ -146,7 +148,67 @@ class OLSRegressor:
         """Trả về vector giá trị dự báo (fitted values) trên tập huấn luyện."""
         self._check_fitted()
         return self._fitted_values
+
+    def summary(self):
+        """In ra bảng tóm tắt các phép kiểm định hệ số"""
+        self._check_fitted()
+        # Gọi lại hàm phía trên, truyền X đã tiền xử lý, bỏ qua bước check intercept
+        return coef_inference(
+            X=self._X_design, 
+            y=self._y, 
+            beta_hat=self.beta_hat, 
+            sigma2=self.sigma2_hat
+        )
+
+
+def hat_matrix(X: np.ndarray, add_intercept: bool = True) -> tuple[np.ndarray, bool]:
+    """
+    Tính Ma trận chiếu (Hat Matrix) H = X(X^T X)^-1 X^T 
+    và kiểm tra tính lũy đẳng (idempotent: H^2 = H).
     
+    Parameters
+    ----------
+    X : np.ndarray
+        Ma trận đặc trưng đầu vào.
+    add_intercept : bool, default=True
+        Nếu True, tự động chèn thêm cột 1 vào X để tạo thành ma trận design.
+        
+    Returns
+    -------
+    tuple(np.ndarray, bool)
+        - H: Ma trận chiếu kích thước (n, n).
+        - is_idempotent: True nếu H @ H == H (trong phạm vi sai số cho phép).
+    """
+    X = np.asarray(X, dtype=float)
+    if X.ndim == 1:
+        X = X.reshape(-1, 1)
+        
+    # Chuẩn bị ma trận design
+    if add_intercept:
+        ones = np.ones((X.shape[0], 1))
+        X_design = np.hstack([ones, X])
+    else:
+        X_design = X
+        
+    # Tính X^T * X
+    XtX = X_design.T @ X_design
+    
+    # Tính (X^T * X)^-1 với xử lý ngoại lệ cho ma trận suy biến
+    try:
+        XtX_inv = np.linalg.inv(XtX)
+    except np.linalg.LinAlgError:
+        raise ValueError("Lỗi: Ma trận (X^T * X) không khả nghịch. Dữ liệu của bạn có thể đang gặp hiện tượng đa cộng tuyến hoàn hảo làm ma trận bị suy biến.")
+    
+    # Tính H = X * (X^T * X)^-1 * X^T
+    H = X_design @ XtX_inv @ X_design.T
+    
+    # Kiểm tra tính lũy đẳng: H^2 = H
+    # Sử dụng np.allclose để tránh lỗi sai số dấu phẩy động
+    is_idempotent = np.allclose(H @ H, H)
+    
+    return H, is_idempotent
+
+
 def compute_rss(y: np.ndarray, y_hat: np.ndarray) -> float:
     """RSS = ||y - ŷ||² (Residual Sum of Squares - Tổng bình phương phần dư)"""
     residuals = np.asarray(y, dtype=float) - np.asarray(y_hat, dtype=float)
@@ -228,6 +290,173 @@ def model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int, verbose: bool = True
 
     return metrics
 
+
+def coef_inference(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray, sigma2: float, verbose: bool = True) -> dict:
+    """
+    Tính standard errors, t-statistics, p-values và khoảng tin cậy 95% cho từng hệ số hồi quy.
+    
+    Parameters
+    ----------
+    X : np.ndarray
+        Ma trận đặc trưng (n, p). Hàm sẽ tự động kiểm tra xem X đã có cột intercept hay chưa.
+    y : np.ndarray
+        Vector biến mục tiêu (n,).
+    beta_hat : np.ndarray
+        Vector hệ số hồi quy (p+1,).
+    sigma2 : float
+        Ước lượng phương sai nhiễu (sigma^2_hat).
+    verbose : bool
+        Nếu True, in bảng tóm tắt hệ số ra màn hình.
+        
+    Returns
+    -------
+    dict
+        Chứa các mảng 'se', 't_stats', 'p_values', 'ci_lower', 'ci_upper'.
+    """
+    X = np.asarray(X, dtype=float)
+    beta_hat = np.asarray(beta_hat, dtype=float).ravel()
+    n = X.shape[0]
+    
+    # Đồng bộ độ dài của X với beta_hat (chèn thêm cột 1 nếu X đang là ma trận gốc)
+    if X.shape[1] == len(beta_hat) - 1:
+        ones = np.ones((n, 1))
+        X_design = np.hstack([ones, X.reshape(n, -1)])
+    elif X.shape[1] == len(beta_hat):
+        X_design = X
+    else:
+        raise ValueError("Số lượng cột của X không khớp với kích thước của vector beta_hat.")
+        
+    k = X_design.shape[1] # Số tham số (p + 1)
+    df = n - k
+    
+    if df <= 0:
+        raise ValueError("Không đủ bậc tự do (n <= k) để thực hiện kiểm định giả thuyết.")
+        
+    # Tính ma trận (X^T * X)^-1
+    XtX = X_design.T @ X_design
+    try:
+        XtX_inv = np.linalg.inv(XtX)
+    except np.linalg.LinAlgError:
+        raise ValueError("Lỗi: Ma trận (X^T * X) suy biến. Không thể tính sai số chuẩn.")
+        
+    # 1. Sai số chuẩn (Standard Error - SE)
+    # Lấy đường chéo chính của ma trận hiệp phương sai
+    var_beta = sigma2 * np.diag(XtX_inv)
+    se = np.sqrt(var_beta)
+    
+    # 2. Kiểm định Student (t-statistic)
+    t_stats = beta_hat / se
+    
+    # 3. p-values (Kiểm định 2 phía: H0: beta_j = 0)
+    p_values = 2 * (1.0 - stats.t.cdf(np.abs(t_stats), df=df))
+    
+    # 4. Khoảng tin cậy 95%
+    alpha = 0.05
+    # Tìm giá trị tới hạn t (critical value): là giới hạn mà ta sử dụng để ra quyết định chấp nhận hay bác bỏ H0
+    # |t_stats| > t_crit thì bác bỏ H0 (Trong hàm này, dùng p-values để kiểm định chứ không dùng cách này)
+    t_crit = stats.t.ppf(1.0 - alpha / 2.0, df=df)
+    
+    ci_lower = beta_hat - t_crit * se
+    ci_upper = beta_hat + t_crit * se
+    
+    if verbose:
+        print("\n        COEFFICIENT INFERENCE SUMMARY")
+        header = f"{'Coef':>10} {'Estimate':>12} {'Std Error':>12} {'t value':>10} {'Pr(>|t|)':>12} {'[0.025':>12} {'0.975]':>12}"
+        print(header)
+        print("-" * 88)
+        for i in range(k):
+            # Hiển thị nhãn phù hợp
+            label = "Intercept" if (i == 0 and X.shape[1] == k - 1) else f"X_{i}"
+            
+            # Format p-value với dấu '*' nếu có ý nghĩa thống kê (p < 0.05)
+            p_val_str = f"{p_values[i]:12.4e}"
+            sig_mark = "*" if p_values[i] < 0.05 else " "
+            
+            print(f"{label:>10} {beta_hat[i]:12.6f} {se[i]:12.6f} {t_stats[i]:10.4f} {p_val_str}{sig_mark} {ci_lower[i]:12.6f} {ci_upper[i]:12.6f}")
+        print("-" * 88)
+        print(f"Bậc tự do (df) = {df}.  Mức ý nghĩa alpha = {alpha}. (*) p < 0.05")
+
+    return {
+        "se": se,
+        "t_stats": t_stats,
+        "p_values": p_values,
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+        "t_crit": t_crit
+    }
+
+
+def vif(X: np.ndarray, verbose: bool = True) -> np.ndarray:
+    """
+    Tính Hệ số phóng đại phương sai - Variance Inflation Factor (VIF) cho từng biến đặc trưng trong X.
+    
+    Công thức: VIF_j = 1 / (1 - R_j^2)
+    Trong đó R_j^2 là hệ số xác định khi hồi quy biến X_j theo tất cả các biến X còn lại.
+    
+    Parameters
+    ----------
+    X : np.ndarray
+        Ma trận đặc trưng đầu vào, kích thước (n, p). 
+        (Đưa vào X gốc, không bao gồm cột intercept toàn số 1).
+    verbose : bool
+        Nếu True, in kết quả VIF ra màn hình.
+        
+    Returns
+    -------
+    np.ndarray
+        Vector chứa giá trị VIF cho từng biến, kích thước (p,).
+    """
+    X = np.asarray(X, dtype=float)
+    n, p = X.shape
+    vif_values = np.zeros(p)
+    
+    for j in range(p):
+        # Tách biến mục tiêu X_j và các biến giải thích X_{-j}
+        y_target = X[:, j]
+        X_features = np.delete(X, j, axis=1)
+        
+        # Thêm cột intercept cho ma trận X_features
+        ones = np.ones((n, 1))
+        X_design = np.hstack([ones, X_features])
+        
+        # Giải OLS: Dùng np.linalg.lstsq thay vì nghịch đảo trực tiếp
+        # để đảm bảo thuật toán ổn định dù ma trận có lân cận suy biến
+        beta_hat, _, _, _ = np.linalg.lstsq(X_design, y_target, rcond=None)
+        
+        # Tính giá trị dự đoán
+        y_pred = X_design @ beta_hat
+        
+        # Tính R^2 cho mô hình hồi quy hiện tại
+        tss = np.sum((y_target - np.mean(y_target)) ** 2)
+        rss = np.sum((y_target - y_pred) ** 2)
+        
+        # Xử lý trường hợp TSS = 0 (biến X_j là hằng số)
+        if tss == 0:
+            r2 = 0.0
+        else:
+            r2 = 1.0 - (rss / tss)
+        
+        # Xử lý trường hợp R^2 tiến gần 1 (đa cộng tuyến hoàn hảo)
+        # Mẫu số (1 - r2) tiến về 0 thì VIF tiến ra vô cùng
+        if r2 >= 1.0 or np.isclose(r2, 1.0):
+            vif_values[j] = np.inf
+        else:
+            vif_values[j] = 1.0 / (1.0 - r2)
+            
+    if verbose:
+        print("\n        VARIANCE INFLATION FACTOR (VIF)")
+        print("-" * 45)
+        print(f"{'Feature':>10} {'VIF Score':>15} {'Warning':>15}")
+        print("-" * 45)
+        for j in range(p):
+            warning = "Đa cộng tuyến nghiêm trọng!" if vif_values[j] > 10.0 else ""
+            print(f"X_{j}:>10 {vif_values[j]:15.4f}  {warning}")
+        print("-" * 45)
+        print("Lưu ý: VIF > 10 cho thấy hiện tượng đa cộng tuyến nghiêm trọng.")
+            
+    return vif_values
+
+
 def verify_with_sklearn(X: np.ndarray, y: np.ndarray) -> dict:
     from sklearn.linear_model import LinearRegression
     from sklearn.metrics import r2_score
@@ -281,6 +510,7 @@ def verify_with_sklearn(X: np.ndarray, y: np.ndarray) -> dict:
         "passed":        ok,
     }
     
+
 if __name__ == "__main__":
     print("OLS IMPLEMENTATION DEMO")
 
@@ -301,3 +531,20 @@ if __name__ == "__main__":
 
     model_metrics(y_demo, y_hat_demo, p=3, verbose=True)
     verify_with_sklearn(X_demo, y_demo)
+
+    print("\n" + "="*50)
+    print("DEMO: CÁC HÀM NÂNG CAO (HAT, INFERENCE, VIF)")
+    print("="*50)
+
+    # Minh họa Hat Matrix
+    print("\n1. HAT MATRIX")
+    H, is_idemp = hat_matrix(X_demo, add_intercept=True)
+    print(f"  -> Kích thước ma trận chiếu H: {H.shape}")
+    print(f"  -> Ma trận H có tính lũy đẳng (H^2 = H) không?: {is_idemp}")
+
+    # Minh họa Suy diễn Thống kê (t-test, p-value, CI)
+    # Lưu ý: truyền sigma2_hat từ dict 'res' hoặc thuộc tính của 'model' đều được
+    coef_inference(X_demo, y_demo, model.beta_hat, model.sigma2_hat)
+
+    # Minh họa tính VIF
+    vif(X_demo)
