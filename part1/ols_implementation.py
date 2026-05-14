@@ -282,7 +282,7 @@ def verify_with_sklearn(X: np.ndarray, y: np.ndarray) -> dict:
     }
     
 if __name__ == "__main__":
-    print("OLS IMPLEMENTATION DEMO & UNIT TESTS")
+    print("OLS IMPLEMENTATION DEMO")
 
     np.random.seed(42)
     n = 150
