@@ -450,7 +450,7 @@ def vif(X: np.ndarray, verbose: bool = True) -> np.ndarray:
         print("-" * 45)
         for j in range(p):
             warning = "Đa cộng tuyến nghiêm trọng!" if vif_values[j] > 10.0 else ""
-            print(f"X_{j}:>10 {vif_values[j]:15.4f}  {warning}")
+            print(f"{'X_' + str(j):>10} {vif_values[j]:15.4f}  {warning}")
         print("-" * 45)
         print("Lưu ý: VIF > 10 cho thấy hiện tượng đa cộng tuyến nghiêm trọng.")
             
