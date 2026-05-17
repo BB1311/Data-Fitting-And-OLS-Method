@@ -172,6 +172,8 @@ def hat_matrix(X: np.ndarray, add_intercept: bool = True, return_idempotent: boo
         Ma trận đặc trưng đầu vào.
     add_intercept : bool, default=True
         Nếu True, tự động chèn thêm cột 1 vào X để tạo thành ma trận design.
+    return_idempotent : bool, default=True
+        Nếu True, trả về thêm một giá trị boolean (True/False) xác nhận tính lũy đẳng của ma trận H.
         
     Returns
     -------
