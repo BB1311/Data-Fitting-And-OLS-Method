@@ -27,6 +27,10 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
             df_clean[col] = df_clean[col].fillna('None')
 
     # Nhóm 1.2: Biến số học (Numerical) -> Điền 0 (diện tích/số lượng = 0 khi không có tiện ích)
+    # Lưu ý: Garage Area/Cars có 1 NaN duy nhất ở hàng có Garage Type = 'Detchd'
+    # (nhà có garage nhưng bị bỏ sót diện tích — thực chất là MAR).
+    # Tuy nhiên chỉ 1 hàng nên ảnh hưởng đến mô hình không đáng kể;
+    # xử lý chung bằng 0 để đơn giản hóa pipeline.
     cols_fill_zero = [
         'Garage Area', 'Garage Cars',
         'BsmtFin SF 1', 'BsmtFin SF 2', 'Bsmt Unf SF', 'Total Bsmt SF',
@@ -48,9 +52,10 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
         df_clean['Lot Frontage'] = df_clean['Lot Frontage'].fillna(df_clean['Lot Frontage'].median())
 
     # Nhóm 2.2: Garage Yr Blt — global median
-    # NaN xuất hiện ở 159 nhà không có garage (Garage Type = 'None').
-    # Điền median (~1979) là chấp nhận được vì biến này sẽ bị loại ở bước
-    # Feature Selection do đa cộng tuyến cao với Year Built (r = 0.83).
+    # 157/159 NaN là MNAR (nhà không có garage, Garage Type = NaN).
+    # 2/159 NaN còn lại là MAR (có garage nhưng bỏ sót năm xây).
+    # Xử lý chung bằng median (~1979) — biến này sẽ bị loại ở Feature Selection
+    # do đa cộng tuyến cao với Year Built (r = 0.83).
     if 'Garage Yr Blt' in df_clean.columns:
         df_clean['Garage Yr Blt'] = df_clean['Garage Yr Blt'].fillna(
             df_clean['Garage Yr Blt'].median()
@@ -87,7 +92,7 @@ if __name__ == "__main__":
     print("\nKiểm chứng Lot Frontage (MAR - grouped median):")
     print(df_imputed['Lot Frontage'].describe())
 
-    print("\nKiểm chứng Garage Yr Blt (MAR - global median):")
+    print("\nKiểm chứng Garage Yr Blt (hỗn hợp - global median):")
     print(df_imputed['Garage Yr Blt'].describe())
 
     print("\nKiểm chứng Mas Vnr Type (MNAR - điền None):")
