@@ -234,6 +234,8 @@ def _soft_threshold(z: float, gamma: float) -> float:
     z     : gia tri can ap dung nguong.
     gamma : nguong (>= 0).
     """
+    if gamma < 0:
+        raise ValueError(f"gamma phải >= 0, nhưng nhận được {gamma}")
     return float(np.sign(z) * max(abs(z) - gamma, 0.0))
 
 
@@ -266,6 +268,7 @@ def _lasso_coordinate_descent(
     """
     n, k   = X.shape
     beta   = np.zeros(k)
+    residuals = y.copy()          # residuals = y - X @ beta, hiện tại beta = 0
     x_sq   = np.sum(X ** 2, axis=0)   # ||x_j||^2, shape (k,)
 
     # Hàm mục tiêu ban đầu (nếu tol_f được chỉ định)
@@ -278,12 +281,11 @@ def _lasso_coordinate_descent(
 
         for j in range(k):
             if x_sq[j] == 0.0:
-                beta[j] = 0.0
                 continue
 
-            # Partial residual: r_j = y - X beta + x_j * beta_j
-            r_j   = y - X @ beta + X[:, j] * beta[j]
-            rho_j = float(X[:, j] @ r_j)
+            residuals += X[:, j] * beta[j]
+            # Tính tương quan giữa biến j và residuals hiện tại
+            rho_j = float(X[:, j] @ residuals)
 
             if j == 0:
                 # Intercept: khong bi phat
@@ -291,6 +293,9 @@ def _lasso_coordinate_descent(
             else:
                 # n * lam la nguong tuong ung khi ham muc tieu co (1/2n)
                 beta[j] = _soft_threshold(rho_j, n * lam) / x_sq[j]
+                
+            # Đưa đóng góp MỚI của biến j vào residuals
+            residuals -= X[:, j] * beta[j]
 
          # Hội tụ 1 – theo thay đổi của β
         if np.max(np.abs(beta - beta_old)) < tol:
