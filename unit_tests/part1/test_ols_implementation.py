@@ -308,11 +308,11 @@ def test_coef_inference_correctness():
     y = np.array([2.0, 4.0, 5.0])
     
     # Nghiệm được giải chính xác bằng toán học phân số:
-    beta_hat_true = np.array([2/3, 1.5])   # intercept = 0.666..., slope = 1.5
-    sigma2_true = 1/6                      # Phương sai nhiễu RSS/df = (1/6) / 1
+    beta_hat_expected = np.array([2/3, 1.5])   # intercept = 0.666..., slope = 1.5
+    sigma2_expected = 1/6                      # Phương sai nhiễu RSS/df = (1/6) / 1
     
     # Chạy hàm
-    res = coef_inference(X, y, beta_hat_true, sigma2_true, verbose=False)
+    res = coef_inference(X, y, beta_hat_expected, sigma2_expected, verbose=False)
     
     # 1. Kiểm tra Standard Errors (SE)
     # Công thức: SE = sqrt(sigma2 * diag((X^T X)^-1))

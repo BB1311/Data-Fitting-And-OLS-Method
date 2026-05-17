@@ -389,8 +389,10 @@ def coef_inference(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray, sigma2: f
             # Hiển thị nhãn phù hợp
             if i == 0 and has_intercept_col:
                 label = "Intercept"
+            elif has_intercept_col:
+                label = f"X_{i}"     # i = 1 -> X_1, i = 2 -> X_2,…
             else:
-                label = f"X_{i - 1}" if has_intercept_col else f"X_{i}"
+                label = f"X_{i + 1}" # không có intercept: bắt đầu từ X_1
             
             # Format p-value với dấu '*' nếu có ý nghĩa thống kê (p < 0.05)
             p_val_str = f"{p_values[i]:12.4e}"
