@@ -38,39 +38,39 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
             df_clean[col] = df_clean[col].fillna(0)
 
     # PHƯƠNG PHÁP 2: MEDIAN/MODE IMPUTATION (Cho cơ chế MAR/MCAR)
-        # Nhóm 2.1: Lot Frontage — grouped median theo Neighborhood
-        # Lý do: mặt tiền phụ thuộc mạnh vào khu vực (dao động 21–92 ft theo neighborhood),
-        # dùng global median (68 ft) sẽ sai lệch lớn cho các khu vực đặc thù.
-        if 'Lot Frontage' in df_clean.columns:
-            df_clean['Lot Frontage'] = df_clean.groupby('Neighborhood')['Lot Frontage'] \
-                .transform(lambda x: x.fillna(x.median()))
-            # Fallback: một số Neighborhood quá ít mẫu → median = NaN (vd: GrnHill, Landmrk)
-            df_clean['Lot Frontage'] = df_clean['Lot Frontage'].fillna(df_clean['Lot Frontage'].median())
+    # Nhóm 2.1: Lot Frontage — grouped median theo Neighborhood
+    # Lý do: mặt tiền phụ thuộc mạnh vào khu vực (dao động 21–92 ft theo neighborhood),
+    # dùng global median (68 ft) sẽ sai lệch lớn cho các khu vực đặc thù.
+    if 'Lot Frontage' in df_clean.columns:
+        df_clean['Lot Frontage'] = df_clean.groupby('Neighborhood')['Lot Frontage'] \
+            .transform(lambda x: x.fillna(x.median()))
+        # Fallback: một số Neighborhood quá ít mẫu → median = NaN (vd: GrnHill, Landmrk)
+        df_clean['Lot Frontage'] = df_clean['Lot Frontage'].fillna(df_clean['Lot Frontage'].median())
 
-        # Nhóm 2.2: Garage Yr Blt — global median
-        # NaN xuất hiện ở 159 nhà không có garage (Garage Type = 'None').
-        # Điền median (~1979) là chấp nhận được vì biến này sẽ bị loại ở bước
-        # Feature Selection do đa cộng tuyến cao với Year Built (r = 0.83).
-        if 'Garage Yr Blt' in df_clean.columns:
-            df_clean['Garage Yr Blt'] = df_clean['Garage Yr Blt'].fillna(
-                df_clean['Garage Yr Blt'].median()
-            )
+    # Nhóm 2.2: Garage Yr Blt — global median
+    # NaN xuất hiện ở 159 nhà không có garage (Garage Type = 'None').
+    # Điền median (~1979) là chấp nhận được vì biến này sẽ bị loại ở bước
+    # Feature Selection do đa cộng tuyến cao với Year Built (r = 0.83).
+    if 'Garage Yr Blt' in df_clean.columns:
+        df_clean['Garage Yr Blt'] = df_clean['Garage Yr Blt'].fillna(
+            df_clean['Garage Yr Blt'].median()
+        )
 
-        # Nhóm 2.3: Các biến số học còn lại → global median (robust với outlier hơn mean)
-        numeric_cols = df_clean.select_dtypes(include=[np.number]).columns
-        for col in numeric_cols:
-            if df_clean[col].isnull().any():
-                df_clean[col] = df_clean[col].fillna(df_clean[col].median())
+    # Nhóm 2.3: Các biến số học còn lại → global median (robust với outlier hơn mean)
+    numeric_cols = df_clean.select_dtypes(include=[np.number]).columns
+    for col in numeric_cols:
+        if df_clean[col].isnull().any():
+            df_clean[col] = df_clean[col].fillna(df_clean[col].median())
 
-        # Nhóm 2.4: Các biến phân loại còn lại → mode (vd: Electrical - 1 NaN)
-        categorical_cols = df_clean.select_dtypes(include=['object', 'category']).columns
-        for col in categorical_cols:
-            if df_clean[col].isnull().any():
-                mode_series = df_clean[col].mode()
-                mode_val = mode_series[0] if not mode_series.empty else 'Unknown'
-                df_clean[col] = df_clean[col].fillna(mode_val)
+    # Nhóm 2.4: Các biến phân loại còn lại → mode (vd: Electrical - 1 NaN)
+    categorical_cols = df_clean.select_dtypes(include=['object', 'category']).columns
+    for col in categorical_cols:
+        if df_clean[col].isnull().any():
+            mode_series = df_clean[col].mode()
+            mode_val = mode_series[0] if not mode_series.empty else 'Unknown'
+            df_clean[col] = df_clean[col].fillna(mode_val)
 
-        return df_clean
+    return df_clean
 
 # KIỂM THỬ MODULE
 if __name__ == "__main__":
