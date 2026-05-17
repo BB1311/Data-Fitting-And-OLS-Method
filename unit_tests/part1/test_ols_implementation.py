@@ -321,7 +321,7 @@ def test_coef_inference_correctness():
     _assert_close(res["se"], se_expected, msg="Sai số chuẩn (SE) tính sai")
     
     # 2. Kiểm tra t-statistics
-    t_expected = [beta_hat_true[0] / se_expected[0], beta_hat_true[1] / se_expected[1]]
+    t_expected = [beta_hat_expected[0] / se_expected[0], beta_hat_expected[1] / se_expected[1]]
     _assert_close(res["t_stats"], t_expected, msg="t-statistics tính sai")
     
     # 3. Kiểm tra p-values và Khoảng tin cậy (với df = n - k = 3 - 2 = 1)
@@ -329,7 +329,7 @@ def test_coef_inference_correctness():
     _assert_close(res["p_values"], p_expected, msg="p-values tính sai")
     
     t_crit = stats.t.ppf(0.975, df=1)
-    ci_lower_expected = beta_hat_true - t_crit * np.array(se_expected)
+    ci_lower_expected = beta_hat_expected - t_crit * np.array(se_expected)
     _assert_close(res["ci_lower"], ci_lower_expected, msg="Cận dưới CI 95% sai")
 
 
