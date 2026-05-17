@@ -258,10 +258,10 @@ def test_hat_matrix_properties():
     H, is_idemp = hat_matrix(X, add_intercept=True)
     
     # 1. Kích thước của H phải là n x n (4 x 4)
-    assert H.shape == (4, 4), f"Lỗi: Kích thước kỳ vọng (4, 4), nhưng nhận được {H.shape}"
+    assert H.shape == (4, 4), f"FAIL: Kích thước kỳ vọng (4, 4), nhưng nhận được {H.shape}"
     
     # 2. Hàm phải xác nhận H là ma trận lũy đẳng (H^2 = H)
-    assert is_idemp is True, "Lỗi: Hàm báo cáo ma trận không lũy đẳng."
+    assert is_idemp is True, "FAIL: Hàm báo cáo ma trận không lũy đẳng."
     
     # 3. Tính đối xứng: H = H^T
     _assert_close(H, H.T, msg="H phải là ma trận đối xứng")
@@ -278,8 +278,8 @@ def test_hat_matrix_no_intercept():
     
     H, is_idemp = hat_matrix(X, add_intercept=False)
     
-    assert H.shape == (3, 3), "Lỗi: Kích thước phải là (3, 3)"
-    assert is_idemp is True, "Lỗi: Ma trận vẫn phải lũy đẳng"
+    assert H.shape == (3, 3), "FAIL: Kích thước phải là (3, 3)"
+    assert is_idemp is True, "FAIL: Ma trận vẫn phải lũy đẳng"
     
     # Vì không có intercept, số tham số mô hình k = p = 1. Trace(H) = 1
     _assert_close(np.trace(H), 1.0, msg="Trace(H) phải bằng 1 khi không có intercept")
@@ -358,6 +358,29 @@ def test_coef_inference_exceptions():
         coef_inference(X_collinear, y_collinear, beta_dummy, sigma2, verbose=False)
 
 
+def test_coef_inference_intercept_label():
+    """
+    Kiểm tra nhãn "Intercept" được nhận diện đúng trong cả hai trường hợp:
+    a) Gọi với X gốc (hàm tự thêm cột 1)
+    b) Gọi với X_design (đã có cột 1) — tương đương gọi qua summary()
+ 
+    Cả hai phải tính SE như nhau (kết quả số học giống hệt).
+    """
+    X        = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+    y        = np.array([2.1, 3.9, 6.1, 7.9, 10.1])
+    model    = OLSRegressor(fit_intercept=True).fit(X, y)
+ 
+    # Gọi với X gốc
+    res_raw  = coef_inference(X, y, model.beta_hat, model.sigma2_hat, verbose=False)
+    # Gọi với X_design (giống summary())
+    res_des  = coef_inference(model._X_design, y, model.beta_hat, model.sigma2_hat, verbose=False)
+ 
+    # Kết quả số học phải giống hệt nhau
+    _assert_close(res_raw["se"],       res_des["se"],       msg="SE nhất quán")
+    _assert_close(res_raw["t_stats"],  res_des["t_stats"],  msg="t-stat nhất quán")
+    _assert_close(res_raw["p_values"], res_des["p_values"], msg="p-value nhất quán")
+
+
 # ============================================================
 # Kiểm thử hàm vif (Variance Inflation Factor)
 # ============================================================
@@ -400,31 +423,27 @@ def test_vif_perfect_collinearity():
     vif_scores = vif(X_collinear, verbose=False)
     
     # Tất cả các biến đều nằm trong mối quan hệ tuyến tính này nên VIF của cả 3 đều phải là vô cực
-    assert np.isinf(vif_scores[0]), "Lỗi: VIF của X1 phải là vô cực (inf)"
-    assert np.isinf(vif_scores[1]), "Lỗi: VIF của X2 phải là vô cực (inf)"
-    assert np.isinf(vif_scores[2]), "Lỗi: VIF của X3 phải là vô cực (inf)"
+    assert np.isinf(vif_scores[0]), "FAIL: VIF của X1 phải là vô cực (inf)"
+    assert np.isinf(vif_scores[1]), "FAIL: VIF của X2 phải là vô cực (inf)"
+    assert np.isinf(vif_scores[2]), "FAIL: VIF của X3 phải là vô cực (inf)"
 
 
 def test_vif_high_collinearity():
     """Test 3: Đa cộng tuyến cao.
     Kiểm tra xem hệ thống có nhận diện đúng các biến có VIF > 10 không.
     """
-    np.random.seed(42)
-    n = 100
-    
-    x1 = np.random.rand(n)
-    x2 = np.random.rand(n) # x2 hoàn toàn ngẫu nhiên (độc lập)
-    
-    # x3 có tương quan rất mạnh với x1 (cộng thêm một chút nhiễu nhỏ để không bị hoàn hảo)
-    x3 = x1 + np.random.normal(0, 0.01, n)
+    x1 = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    x2 = np.array([5.0, -1.0, 3.0, 8.0, 0.0])      # Độc lập hoàn toàn
+    x3 = np.array([2.01, 4.02, 5.99, 8.05, 9.98])  # x3 gần như bằng 2*x1
     
     X = np.column_stack([x1, x2, x3])
     
+    # Tính VIF
     vif_scores = vif(X, verbose=False)
     
-    # X1 và X3 có quan hệ mật thiết -> VIF phải rất lớn (> 10)
-    assert vif_scores[0] > 10.0, f"Lỗi: VIF của X1 ({vif_scores[0]:.2f}) phải > 10"
-    assert vif_scores[2] > 10.0, f"Lỗi: VIF của X3 ({vif_scores[2]:.2f}) phải > 10"
+    # x1 và x3 có quan hệ mật thiết -> VIF phải rất lớn (> 10)
+    assert vif_scores[0] > 10.0, f"FAIL: VIF của x1 ({vif_scores[0]:.2f}) phải > 10 do đa cộng tuyến"
+    assert vif_scores[2] > 10.0, f"FAIL: VIF của x3 ({vif_scores[2]:.2f}) phải > 10 do đa cộng tuyến"
     
-    # X2 độc lập -> VIF phải nhỏ (gần 1)
-    assert vif_scores[1] < 2.0, f"Lỗi: VIF của X2 ({vif_scores[1]:.2f}) phải nhỏ, vì nó độc lập"
+    # x2 độc lập -> VIF phải rất nhỏ (xấp xỉ 1)
+    assert vif_scores[1] < 2.0, f"FAIL: VIF của x2 ({vif_scores[1]:.2f}) phải nhỏ, vì nó độc lập"

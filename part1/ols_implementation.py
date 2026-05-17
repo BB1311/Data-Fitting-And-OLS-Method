@@ -161,7 +161,7 @@ class OLSRegressor:
         )
 
 
-def hat_matrix(X: np.ndarray, add_intercept: bool = True) -> tuple[np.ndarray, bool]:
+def hat_matrix(X: np.ndarray, add_intercept: bool = True, return_idempotent: bool = True) -> tuple[np.ndarray, bool]:
     """
     Tính Ma trận chiếu (Hat Matrix) H = X(X^T X)^-1 X^T 
     và kiểm tra tính lũy đẳng (idempotent: H^2 = H).
@@ -192,6 +192,16 @@ def hat_matrix(X: np.ndarray, add_intercept: bool = True) -> tuple[np.ndarray, b
         
     # Tính X^T * X
     XtX = X_design.T @ X_design
+
+    # Tính số điều kiện của ma trận
+    cond_number = np.linalg.cond(XtX)
+    
+    # Đặt ngưỡng cảnh báo (thường > 1e10 hoặc 1e12 là bắt đầu có vấn đề lớn)
+    if cond_number > 1e10:
+        raise ValueError(
+            f"Lỗi: Ma trận điều kiện quá kém (Condition Number = {cond_number:.2e}). "
+            "Dữ liệu có đa cộng tuyến rất cao, việc nghịch đảo sẽ sinh ra sai số nghiêm trọng."
+        )
     
     # Tính (X^T * X)^-1 với xử lý ngoại lệ cho ma trận suy biến
     try:
@@ -206,7 +216,10 @@ def hat_matrix(X: np.ndarray, add_intercept: bool = True) -> tuple[np.ndarray, b
     # Sử dụng np.allclose để tránh lỗi sai số dấu phẩy động
     is_idempotent = np.allclose(H @ H, H)
     
-    return H, is_idempotent
+    # Trả về linh hoạt theo nhu cầu của các hàm khác
+    if return_idempotent:
+        return H, is_idempotent
+    return H
 
 
 def compute_rss(y: np.ndarray, y_hat: np.ndarray) -> float:
@@ -298,7 +311,7 @@ def coef_inference(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray, sigma2: f
     Parameters
     ----------
     X : np.ndarray
-        Ma trận đặc trưng (n, p). Hàm sẽ tự động kiểm tra xem X đã có cột intercept hay chưa.
+        Ma trận đặc trưng (n, p). Nếu X đã có cột intercept, để nguyên; Nếu chưa, hàm sẽ tự động thêm cột 1.
     y : np.ndarray
         Vector biến mục tiêu (n,).
     beta_hat : np.ndarray
@@ -342,6 +355,9 @@ def coef_inference(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray, sigma2: f
     # 1. Sai số chuẩn (Standard Error - SE)
     # Lấy đường chéo chính của ma trận hiệp phương sai
     var_beta = sigma2 * np.diag(XtX_inv)
+    
+    # Xử lý sai số dấu phẩy động: Ép các giá trị âm cực nhỏ (do sai số float) về 0 trước khi tính căn
+    var_beta = np.maximum(var_beta, 0.0) 
     se = np.sqrt(var_beta)
     
     # 2. Kiểm định Student (t-statistic)
@@ -364,15 +380,22 @@ def coef_inference(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray, sigma2: f
         header = f"{'Coef':>10} {'Estimate':>12} {'Std Error':>12} {'t value':>10} {'Pr(>|t|)':>12} {'[0.025':>12} {'0.975]':>12}"
         print(header)
         print("-" * 88)
+
+        # Phát hiện cột intercept bằng cách kiểm tra cột đầu có toàn 1.0 không
+        has_intercept_col = np.allclose(X_design[:, 0], 1.0)
         for i in range(k):
             # Hiển thị nhãn phù hợp
-            label = "Intercept" if (i == 0 and X.shape[1] == k - 1) else f"X_{i}"
+            if i == 0 and has_intercept_col:
+                label = "Intercept"
+            else:
+                label = f"X_{i - 1}" if has_intercept_col else f"X_{i}"
             
             # Format p-value với dấu '*' nếu có ý nghĩa thống kê (p < 0.05)
             p_val_str = f"{p_values[i]:12.4e}"
             sig_mark = "*" if p_values[i] < 0.05 else " "
             
             print(f"{label:>10} {beta_hat[i]:12.6f} {se[i]:12.6f} {t_stats[i]:10.4f} {p_val_str}{sig_mark} {ci_lower[i]:12.6f} {ci_upper[i]:12.6f}")
+
         print("-" * 88)
         print(f"Bậc tự do (df) = {df}.  Mức ý nghĩa alpha = {alpha}. (*) p < 0.05")
 
@@ -427,12 +450,14 @@ def vif(X: np.ndarray, verbose: bool = True) -> np.ndarray:
         y_pred = X_design @ beta_hat
         
         # Tính R^2 cho mô hình hồi quy hiện tại
-        tss = np.sum((y_target - np.mean(y_target)) ** 2)
-        rss = np.sum((y_target - y_pred) ** 2)
+        tss = compute_tss(y_target)
+        rss = compute_rss(y_target, y_pred)
         
         # Xử lý trường hợp TSS = 0 (biến X_j là hằng số)
+        # Biến hằng số sẽ đa cộng tuyến hoàn hảo với hệ số chặn (intercept)
         if tss == 0:
-            r2 = 0.0
+            vif_values[j] = np.inf
+            continue
         else:
             r2 = 1.0 - (rss / tss)
         
