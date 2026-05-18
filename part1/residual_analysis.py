@@ -53,7 +53,7 @@ def residual_plots(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray, figsize=(
     y_hat = X_design @ beta_hat
     
     # Lấy các thông số thống kê
-    residuals, std_residuals, leverage, cooks_d = compute_leverage_and_cooks(X_design, y, y_hat)
+    residuals, std_residuals, _, cooks_d = compute_leverage_and_cooks(X_design, y, y_hat)
     
     # Thiết lập matplotlib style
     sns.set_theme(style="whitegrid")
