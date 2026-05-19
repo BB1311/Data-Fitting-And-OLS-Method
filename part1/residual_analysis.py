@@ -2,43 +2,59 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import scipy.stats as stats
+import warnings
+from typing import Tuple, List
 
-def compute_leverage_and_cooks(X_design: np.ndarray, y: np.ndarray, y_hat: np.ndarray) -> tuple:
+def compute_leverage_and_cooks(
+    X_design: np.ndarray, 
+    y: np.ndarray, 
+    y_hat: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[int]]:
     """
-    Tính toán Leverage (h_ii), Phần dư chuẩn hóa (Standardized Residuals) và Cook's Distance.
+    Returns:
+        Tuple: (residuals, internally_stud_res, externally_stud_res, cooks_d, high_leverage_indices)
     """
     n, k = X_design.shape
     residuals = y - y_hat
     
-    # 1. Tính Leverage (đường chéo ma trận H)
-    # Dùng np.linalg.solve để giải (X^T X) W = X^T giống như đã thống nhất ở task trước
+    # 1. Tính Leverage
     XtX = X_design.T @ X_design
     try:
         W = np.linalg.solve(XtX, X_design.T)
     except np.linalg.LinAlgError:
-        # Nếu ma trận suy biến, dùng giả nghịch đảo để vẽ biểu đồ không bị crash
+        warnings.warn("Ma trận X^TX bị suy biến.", RuntimeWarning)
         W = np.linalg.pinv(XtX) @ X_design.T
         
-    # Đường chéo của H = X * (X^T X)^-1 X^T. Tính nhanh bằng element-wise multiplication
     leverage = np.sum(X_design * W.T, axis=1)
+    leverage_threshold = (2 * k) / n
+    high_leverage_indices = np.where(leverage > leverage_threshold)[0].tolist()
     
-    # 2. Tính Phương sai nhiễu và Phần dư chuẩn hóa
-    df = n - k
-    sigma2_hat = np.sum(residuals**2) / df
+    # 2. Tính Internally Studentized Residuals
+    leverage_safe = np.clip(leverage, 0, 0.999)
+    sigma2_hat = np.sum(residuals**2) / (n - k)
+    internally_stud_res = residuals / np.sqrt(sigma2_hat * (1 - leverage_safe))
     
-    # Tránh chia cho 0 hoặc căn số âm do sai số
-    leverage_safe = np.clip(leverage, 0, 0.999) 
-    std_residuals = residuals / np.sqrt(sigma2_hat * (1 - leverage_safe))
+    # Tính Externally Studentized Residuals
+    # Tránh căn số âm hoặc chia cho 0 do sai số máy tính bằng np.clip
+    denom = (n - k) - internally_stud_res**2
+    denom_safe = np.clip(denom, 0.001, None)
+    externally_stud_res = internally_stud_res * np.sqrt((n - k - 1) / denom_safe)
     
-    # 3. Tính Cook's Distance
-    cooks_d = (std_residuals**2 / k) * (leverage_safe / (1 - leverage_safe))
+    # 3. Tính Cook's Distance (Dùng công thức chuẩn với Internally Studentized)
+    cooks_d = (internally_stud_res**2 / k) * (leverage_safe / (1 - leverage_safe))
     
-    return residuals, std_residuals, leverage, cooks_d
+    return residuals, internally_stud_res, externally_stud_res, leverage, cooks_d, high_leverage_indices
 
-def residual_plots(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray, figsize=(14, 10)):
+def residual_plots(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray):
     """
     Vẽ 4 biểu đồ chẩn đoán phần dư theo chuẩn Thống kê (Residual Analysis).
     """
+    sns.set_theme(style="whitegrid")
+
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
+    fig.set_layout_engine('constrained')
+    fig.suptitle('Phân Tích Phần Dư (Residual Analysis)', fontsize=16, fontweight='bold')
+
     X = np.asarray(X, dtype=float)
     y = np.asarray(y, dtype=float).ravel()
     beta_hat = np.asarray(beta_hat, dtype=float).ravel()
@@ -53,15 +69,10 @@ def residual_plots(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray, figsize=(
     y_hat = X_design @ beta_hat
     
     # Lấy các thông số thống kê
-    residuals, std_residuals, _, cooks_d = compute_leverage_and_cooks(X_design, y, y_hat)
-    
-    # Thiết lập matplotlib style
-    sns.set_theme(style="whitegrid")
-    fig, axes = plt.subplots(2, 2, figsize=figsize)
-    fig.suptitle('Phân Tích Phần Dư (Residual Analysis)', fontsize=16, fontweight='bold')
-    
+    # Cập nhật dòng này trong hàm residual_plots:
+    residuals, int_stud_res, ext_stud_res, leverage, cooks_d, high_leverage = compute_leverage_and_cooks(X_design, y, y_hat)
+
     # 1. Residuals vs Fitted (Kiểm tra tuyến tính & phương sai)
-    ax1 = axes[0, 0]
     sns.residplot(x=y_hat, y=residuals, lowess=True, 
                   scatter_kws={'alpha': 0.6, 'edgecolor': 'k'}, 
                   line_kws={'color': 'red', 'lw': 2}, ax=ax1)
@@ -71,28 +82,26 @@ def residual_plots(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray, figsize=(
     ax1.set_ylabel('Phần dư (Residuals)')
 
     # 2. Normal Q-Q Plot (Kiểm tra phân phối chuẩn)
-    ax2 = axes[0, 1]
-    stats.probplot(std_residuals, dist="norm", plot=ax2)
+    ax2 = ax2
+    stats.probplot(ext_stud_res, dist="norm", plot=ax2)
     ax2.get_lines()[0].set_alpha(0.6)
     ax2.get_lines()[0].set_markeredgecolor('k')
     ax2.get_lines()[1].set_color('red')
     ax2.get_lines()[1].set_linewidth(2)
-    ax2.set_title('2. Normal Q-Q', fontsize=13, fontweight='bold')
+    ax2.set_title('2. Normal Q-Q (Externally Studentized)', fontsize=13, fontweight='bold')
     ax2.set_xlabel('Phân vị lý thuyết (Theoretical Quantiles)')
-    ax2.set_ylabel('Phần dư chuẩn hóa (Standardized Residuals)')
+    ax2.set_ylabel('Phần dư Student hóa ngoài (Externally Studentized)')
 
     # 3. Scale-Location (Kiểm tra phương sai đồng đều)
-    ax3 = axes[1, 0]
-    sqrt_abs_std_res = np.sqrt(np.abs(std_residuals))
+    sqrt_abs_std_res = np.sqrt(np.abs(int_stud_res))
     sns.regplot(x=y_hat, y=sqrt_abs_std_res, lowess=True,
                 scatter_kws={'alpha': 0.6, 'edgecolor': 'k'}, 
                 line_kws={'color': 'red', 'lw': 2}, ax=ax3)
     ax3.set_title('3. Scale-Location', fontsize=13, fontweight='bold')
     ax3.set_xlabel('Giá trị dự đoán (Fitted values)')
-    ax3.set_ylabel(r'$\sqrt{|Standardized\ Residuals|}$')
+    ax3.set_ylabel(r'$\sqrt{|Studentized\ Residuals|}$')
     
     # 4. Cook's Distance (Xác định điểm ảnh hưởng lớn)
-    ax4 = axes[1, 1]
     markerline, stemlines, baseline = ax4.stem(range(len(cooks_d)), cooks_d, basefmt=" ", markerfmt="o")
     plt.setp(stemlines, 'color', 'steelblue', 'alpha', 0.6)
     plt.setp(markerline, 'color', 'steelblue', 'alpha', 0.6, 'markeredgecolor', 'k')
@@ -106,8 +115,12 @@ def residual_plots(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray, figsize=(
     ax4.set_ylabel("Cook's Distance")
     ax4.legend()
     
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.show()
+    if high_leverage:
+        print(f"[CẢNH BÁO] Phát hiện các điểm có độ đòn bẩy (Leverage) cao vượt ngưỡng tiêu chuẩn (2k/n): {high_leverage}")
+    else:
+        print("[THÔNG BÁO] Không có điểm nào có độ đòn bẩy (Leverage) vượt ngưỡng tiêu chuẩn.")
+
+    return fig, ((ax1, ax2), (ax3, ax4))
 
 # KHỐI DEMO (Chạy độc lập để test hàm)
 if __name__ == "__main__":
@@ -134,4 +147,5 @@ if __name__ == "__main__":
     
     # Gọi hàm vẽ
     print("Đang tạo biểu đồ Phân tích phần dư...")
-    residual_plots(X_demo, y_demo, beta_hat_demo)
+    fig, axes = residual_plots(X_demo, y_demo, beta_hat_demo)
+    plt.show()
