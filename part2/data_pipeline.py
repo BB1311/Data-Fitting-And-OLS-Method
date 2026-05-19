@@ -195,16 +195,16 @@ else:
 # (vì có thể bỏ sót Garage Type nhưng diện tích/số xe vẫn được ghi)
 print("  3.3. Garage...")
 has_garage = (
-    df['Garage Type'].notna() |
     (df['Garage Area'].fillna(0) > 0) |
-    (df['Garage Cars'].fillna(0) > 0)
+    (df['Garage Cars'].fillna(0) > 0) |
+    (df['Garage Type'].notna() & (df['Garage Type'] != 'None'))
 )
 no_garage = ~has_garage
 
 # Nhà không có garage: tất cả biến garage = giá trị "không tồn tại"
 for col in ['Garage Type', 'Garage Finish', 'Garage Qual', 'Garage Cond']:
     df.loc[no_garage, col] = 'None'
-df.loc[no_garage, ['Garage Yr Blt', 'Garage Cars', 'Garage Area']] = 0
+df.loc[no_garage, ['Garage Cars', 'Garage Area']] = 0
 
 # Nhà có garage — xử lý từng biến theo logic riêng:
 has_g = has_garage
@@ -327,6 +327,17 @@ df.loc[no_basement, ['BsmtFin SF 1', 'BsmtFin SF 2', 'Bsmt Unf SF',
                       'Total Bsmt SF', 'Bsmt Full Bath', 'Bsmt Half Bath']] = 0
 
 has_b = has_basement
+
+# Đảm bảo nhất quán: nếu diện tích = 0 thì loại hoàn thiện phải là 'Unf'
+mask_type1_zero = has_b & (df['BsmtFin SF 1'] == 0) & (df['BsmtFin Type 1'].isna())
+if mask_type1_zero.any():
+    df.loc[mask_type1_zero, 'BsmtFin Type 1'] = 'Unf'
+    print(f"    {mask_type1_zero.sum()} dòng BsmtFin SF 1 = 0, gán BsmtFin Type 1 = 'Unf'")
+
+mask_type2_zero = has_b & (df['BsmtFin SF 2'] == 0) & (df['BsmtFin Type 2'].isna())
+if mask_type2_zero.any():
+    df.loc[mask_type2_zero, 'BsmtFin Type 2'] = 'Unf'
+    print(f"    {mask_type2_zero.sum()} dòng BsmtFin SF 2 = 0, gán BsmtFin Type 2 = 'Unf'")
 
 # BsmtFin SF 1: median theo loại hoàn thiện (BsmtFin Type 1)
 mask_sf1 = has_b & df['BsmtFin SF 1'].isna()
@@ -460,6 +471,26 @@ df['Electrical'] = df['Electrical'].fillna(df['Electrical'].mode()[0])
 # BƯỚC 5: TẠO BIẾN MỚI, XÓA BIẾN GỐC
 # ══════════════════════════════════════════════════════════════════════
 print("\nBƯỚC 5: TẠO BIẾN MỚI, XÓA BIẾN GỐC")
+
+# Biến cờ có garage (đã có từ bước 3, nhưng lưu lại)
+df['Has_Garage'] = has_garage.astype(int)
+print("  - Has_Garage (cờ có garage)")
+
+# Tạo tuổi garage chỉ cho nhà có garage (dùng sentinel 0 cho nhà không có)
+df['Garage_Age'] = np.where(
+    df['Has_Garage'] == 1,
+    df['Yr Sold'] - df['Garage Yr Blt'],
+    0   # sentinel: nhà không có garage thì tuổi = 0
+)
+print("  - Garage_Age (tuổi garage, =0 nếu không có garage)")
+
+# Nếu muốn giữ Garage Yr Blt gốc, có thể thay NaN bằng sentinel -1
+# (nhưng không khuyến khích vì sẽ ảnh hưởng đến các biến tương tác)
+# df['Garage Yr Blt'] = df['Garage Yr Blt'].fillna(-1)
+
+# Sau khi tạo Garage_Age, xóa Garage Yr Blt gốc
+df.drop(columns=['Garage Yr Blt'], inplace=True, errors='ignore')
+print("  - Đã xóa Garage Yr Blt (thay bằng Garage_Age và Has_Garage)")
 
 # Biến thời gian
 df['Age_At_Sale'] = df['Yr Sold'] - df['Year Built']
