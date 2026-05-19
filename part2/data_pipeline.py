@@ -20,7 +20,7 @@ df.columns = df.columns.str.strip()
 print(f"BƯỚC 0: DỮ LIỆU GỐC — {df.shape[0]} dòng, {df.shape[1]} cột")
 
 # ══════════════════════════════════════════════════════════════════════
-# BƯỚC 1: XÓA CỘT VÔ DỤNG
+# BƯỚC 1: XÓA CỘT ĐỊNH DANH
 # ══════════════════════════════════════════════════════════════════════
 print("\nBƯỚC 1: XÓA CỘT VÔ DỤNG")
 
@@ -339,26 +339,25 @@ if mask_type2_zero.any():
     df.loc[mask_type2_zero, 'BsmtFin Type 2'] = 'Unf'
     print(f"    {mask_type2_zero.sum()} dòng BsmtFin SF 2 = 0, gán BsmtFin Type 2 = 'Unf'")
 
-# BsmtFin SF 1: median theo loại hoàn thiện (BsmtFin Type 1)
-mask_sf1 = has_b & df['BsmtFin SF 1'].isna()
-if mask_sf1.any():
-    med = (df[df['BsmtFin SF 1'].notna() & (df['BsmtFin Type 1'] != 'None')]
-           .groupby('BsmtFin Type 1')['BsmtFin SF 1'].median())
-    for idx in df.index[mask_sf1]:
-        ft = df.loc[idx, 'BsmtFin Type 1']
-        df.loc[idx, 'BsmtFin SF 1'] = med[ft] if ft in med.index else 0
-    print(f"    {mask_sf1.sum()} dòng thiếu BsmtFin SF 1 → median theo BsmtFin Type 1")
+# BsmtFin SF 1/2: median theo loại hoàn thiện (BsmtFin Type 1/2)
+for col, sf_col in [('BsmtFin Type 1', 'BsmtFin SF 1'), ('BsmtFin Type 2', 'BsmtFin SF 2')]:
+    mask = has_b & df[col].isna()
+    if mask.any():
+        # Chỉ tính bins trên nhà CÓ tầng hầm và SF > 0
+        # để tránh các giá trị 0 của nhà không có tầng hầm kéo lệch ranh giới nhóm
+        valid = df[has_b & df[sf_col].notna() & (df[sf_col] > 0)]
+        bins = pd.qcut(valid[sf_col], q=3, duplicates='drop', retbins=True)[1]
 
-# BsmtFin SF 2: tương tự theo BsmtFin Type 2
-mask_sf2 = has_b & df['BsmtFin SF 2'].isna()
-if mask_sf2.any():
-    med = (df[df['BsmtFin SF 2'].notna() & (df['BsmtFin Type 2'] != 'None')]
-           .groupby('BsmtFin Type 2')['BsmtFin SF 2'].median())
-    for idx in df.index[mask_sf2]:
-        ft = df.loc[idx, 'BsmtFin Type 2']
-        df.loc[idx, 'BsmtFin SF 2'] = med[ft] if ft in med.index else 0
-    print(f"    {mask_sf2.sum()} dòng thiếu BsmtFin SF 2 → median theo BsmtFin Type 2")
-
+        mode_by_sf = (
+            df[df[col].notna() & (df[col] != 'None') & has_b]
+            .groupby(pd.cut(valid[sf_col], bins=bins), observed=True)[col]
+            .agg(lambda x: x.mode()[0] if not x.mode().empty else 'Unf')
+        )
+        sf_cuts = pd.cut(df[sf_col], bins=bins)
+        for idx in df.index[mask]:
+            sf_grp = sf_cuts[idx]
+            df.loc[idx, col] = mode_by_sf.get(sf_grp, 'Unf')
+        print(f"    {mask.sum()} dòng thiếu {col} → mode theo nhóm diện tích {sf_col} (has_basement only)")
 # Bsmt Unf SF: phần dư = Total - Fin1 - Fin2
 mask_unf = has_b & df['Bsmt Unf SF'].isna()
 if mask_unf.any():
@@ -454,7 +453,7 @@ if missing_exists:
 # ══════════════════════════════════════════════════════════════════════
 print("\nBƯỚC 4: IMPUTATION LOT FRONTAGE VÀ ELECTRICAL")
 
-# Lot Frontage (~16.7% missing): MAR — bị bỏ sót khi đo đạc
+# Lot Frontage (~16.7% missing): MAR — bị bỏ sót khi đo đạc hoặc MCAR — bị bỏ sót ngẫu nhiên trong quá trình thu thập.
 # Grouped median theo Neighborhood vì mặt tiền phụ thuộc mạnh vào khu vực
 # (dao động 21–92 ft theo neighborhood, khác rất nhiều so với global median 68 ft)
 print("  4.1. Lot Frontage → grouped median theo Neighborhood")
