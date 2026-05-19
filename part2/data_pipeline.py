@@ -328,36 +328,55 @@ df.loc[no_basement, ['BsmtFin SF 1', 'BsmtFin SF 2', 'Bsmt Unf SF',
 
 has_b = has_basement
 
-# Đảm bảo nhất quán: nếu diện tích = 0 thì loại hoàn thiện phải là 'Unf'
-mask_type1_zero = has_b & (df['BsmtFin SF 1'] == 0) & (df['BsmtFin Type 1'].isna())
+# Đảm bảo nhất quán: nếu diện tích = 0 thì loại hoàn thiện phải là 'Unf' (xử lý cả NaN)
+mask_type1_zero = has_b & (df['BsmtFin SF 1'].fillna(0) == 0) & (df['BsmtFin Type 1'].isna())
 if mask_type1_zero.any():
     df.loc[mask_type1_zero, 'BsmtFin Type 1'] = 'Unf'
     print(f"    {mask_type1_zero.sum()} dòng BsmtFin SF 1 = 0, gán BsmtFin Type 1 = 'Unf'")
 
-mask_type2_zero = has_b & (df['BsmtFin SF 2'] == 0) & (df['BsmtFin Type 2'].isna())
+mask_type2_zero = has_b & (df['BsmtFin SF 2'].fillna(0) == 0) & (df['BsmtFin Type 2'].isna())
 if mask_type2_zero.any():
     df.loc[mask_type2_zero, 'BsmtFin Type 2'] = 'Unf'
     print(f"    {mask_type2_zero.sum()} dòng BsmtFin SF 2 = 0, gán BsmtFin Type 2 = 'Unf'")
 
-# BsmtFin SF 1/2: median theo loại hoàn thiện (BsmtFin Type 1/2)
-for col, sf_col in [('BsmtFin Type 1', 'BsmtFin SF 1'), ('BsmtFin Type 2', 'BsmtFin SF 2')]:
-    mask = has_b & df[col].isna()
-    if mask.any():
-        # Chỉ tính bins trên nhà CÓ tầng hầm và SF > 0
-        # để tránh các giá trị 0 của nhà không có tầng hầm kéo lệch ranh giới nhóm
-        valid = df[has_b & df[sf_col].notna() & (df[sf_col] > 0)]
-        bins = pd.qcut(valid[sf_col], q=3, duplicates='drop', retbins=True)[1]
+# Trường hợp 1: biết loại hoàn thiện (Type), thiếu diện tích (SF) → median theo Type ---
+for typ_col, sf_col in [('BsmtFin Type 1', 'BsmtFin SF 1'), ('BsmtFin Type 2', 'BsmtFin SF 2')]:
+    mask_missing_sf = has_b & df[sf_col].isna()
+    if mask_missing_sf.any():
+        # Tính median của SF cho từng loại Type (chỉ dùng các dòng có SF > 0)
+        median_by_type = df[df[sf_col].notna() & (df[typ_col] != 'None')].groupby(typ_col)[sf_col].median()
+        for idx in df.index[mask_missing_sf]:
+            typ = df.loc[idx, typ_col]
+            df.loc[idx, sf_col] = median_by_type.get(typ, 0)
+        print(f"    {mask_missing_sf.sum()} dòng thiếu {sf_col} → median theo {typ_col}")
 
-        mode_by_sf = (
-            df[df[col].notna() & (df[col] != 'None') & has_b]
-            .groupby(pd.cut(valid[sf_col], bins=bins), observed=True)[col]
-            .agg(lambda x: x.mode()[0] if not x.mode().empty else 'Unf')
-        )
-        sf_cuts = pd.cut(df[sf_col], bins=bins)
-        for idx in df.index[mask]:
-            sf_grp = sf_cuts[idx]
-            df.loc[idx, col] = mode_by_sf.get(sf_grp, 'Unf')
-        print(f"    {mask.sum()} dòng thiếu {col} → mode theo nhóm diện tích {sf_col} (has_basement only)")
+# Trường hợp 2: biết diện tích (SF), thiếu loại hoàn thiện (Type) → mode theo nhóm diện tích ---
+for typ_col, sf_col in [('BsmtFin Type 1', 'BsmtFin SF 1'), ('BsmtFin Type 2', 'BsmtFin SF 2')]:
+    mask_missing_type = has_b & df[typ_col].isna() & (df[sf_col] > 0)
+    if mask_missing_type.any():
+        # Chỉ lấy các dòng có SF > 0 để tính các khoảng phân vị (bins)
+        sf_valid = df.loc[has_b & (df[sf_col] > 0), sf_col]
+        if len(sf_valid) >= 3:
+            # Tính 3 khoảng phân vị dựa trên SF (chỉ từ các dòng có hầm và SF>0)
+            bins = pd.qcut(sf_valid, q=3, retbins=True, duplicates='drop')[1]
+            # Gán mỗi giá trị SF vào một khoảng (bin)
+            sf_bins = pd.cut(df[sf_col], bins=bins)
+            # Tính mode của Type trong mỗi bin (chỉ dùng các dòng có Type biết)
+            mode_by_bin = (
+                df[df[typ_col].notna() & (df[typ_col] != 'None') & has_b]
+                .groupby(sf_bins, observed=True)[typ_col]
+                .agg(lambda x: x.mode()[0] if not x.mode().empty else 'Unf')
+            )
+            for idx in df.index[mask_missing_type]:
+                grp = sf_bins[idx]
+                df.loc[idx, typ_col] = mode_by_bin.get(grp, 'Unf')
+        else:
+            # Fallback: nếu không đủ dữ liệu để chia nhóm, dùng mode chung của các dòng có SF>0
+            mode_val = df.loc[df[sf_col] > 0, typ_col].mode()
+            mode_val = mode_val[0] if not mode_val.empty else 'Unf'
+            df.loc[mask_missing_type, typ_col] = mode_val
+        print(f"    {mask_missing_type.sum()} dòng thiếu {typ_col} → mode theo nhóm diện tích {sf_col}")
+
 # Bsmt Unf SF: phần dư = Total - Fin1 - Fin2
 mask_unf = has_b & df['Bsmt Unf SF'].isna()
 if mask_unf.any():
@@ -404,16 +423,19 @@ if missing_exists:
     # Bsmt Qual: đánh giá chiều cao tầng hầm → phụ thuộc Total Bsmt SF
     mask = has_b & df['Bsmt Qual'].isna()
     if mask.any():
+        sf_valid = df.loc[has_b & df['Total Bsmt SF'].notna() & (df['Total Bsmt SF'] > 0), 'Total Bsmt SF']
+        bins = pd.qcut(sf_valid, q=4, duplicates='drop', retbins=True)[1]
+
         mode_by_sf = (
-            df[df['Bsmt Qual'].notna() & (df['Bsmt Qual'] != 'None')]
-            .groupby(pd.qcut(df['Total Bsmt SF'], q=4, duplicates='drop'), observed=True)['Bsmt Qual']
+            df[df['Bsmt Qual'].notna() & (df['Bsmt Qual'] != 'None') & has_b]
+            .groupby(pd.cut(sf_valid, bins=bins), observed=True)['Bsmt Qual']
             .agg(lambda x: x.mode()[0] if not x.mode().empty else 'TA')
         )
-        sf_bins = pd.qcut(df['Total Bsmt SF'], q=4, duplicates='drop')
+        sf_cuts = pd.cut(df['Total Bsmt SF'], bins=bins)
         for idx in df.index[mask]:
-            grp = sf_bins[idx]
+            grp = sf_cuts[idx]
             df.loc[idx, 'Bsmt Qual'] = mode_by_sf.get(grp, 'TA')
-        print(f"    {mask.sum()} dòng thiếu Bsmt Qual → mode theo nhóm Total Bsmt SF quantile")
+        print(f"    {mask.sum()} dòng thiếu Bsmt Qual → mode theo nhóm Total Bsmt SF quantile (has_basement only)")
 
     # Bsmt Cond: tình trạng bảo trì tầng hầm, có 89% = 'TA', tương quan với Overall Cond chỉ 0.11
     # Phân nhóm theo Overall Cond không mang thêm thông tin.
@@ -423,30 +445,6 @@ if missing_exists:
     if mask.any():
         df.loc[mask, 'Bsmt Cond'] = 'TA'
         print(f"    {mask.sum()} dòng thiếu Bsmt Cond → 'TA' (chiếm 89% giá trị)")
-
-    # BsmtFin Type 1: phụ thuộc diện tích hoàn thiện tương ứng
-    # Loại hoàn thiện (GLQ, ALQ, Rec...) quyết định bởi diện tích Fin SF
-    for col, sf_col in [('BsmtFin Type 1', 'BsmtFin SF 1'), ('BsmtFin Type 2', 'BsmtFin SF 2')]:
-        mask = has_b & df[col].isna()
-        if mask.any():
-            mode_by_sf = (
-                df[df[col].notna() & (df[col] != 'None')]
-                .groupby(pd.qcut(df['BsmtFin SF 1'], q=3, duplicates='drop'), observed=True)[col]
-                .agg(lambda x: x.mode()[0] if not x.mode().empty else 'Unf')
-            )
-            sf_bins = pd.qcut(df[sf_col], q=3, duplicates='drop')
-            for idx in df.index[mask]:
-                sf_grp = sf_bins[idx]
-                df.loc[idx, col] = mode_by_sf.get(sf_grp, 'Unf')
-            print(f"    {mask.sum()} dòng thiếu {col} → mode theo nhóm diện tích {sf_col}")
-
-    # BsmtFin Type 2: chỉ 1 hàng missing, phân nhóm không có ý nghĩa
-    # Điền mode của nhà có tầng hầm và có BsmtFin SF 2 > 0
-    mask = has_b & df['BsmtFin Type 2'].isna()
-    if mask.any():
-        mode_type2 = df.loc[df['BsmtFin SF 2'] > 0, 'BsmtFin Type 2'].mode()[0]
-        df.loc[mask, 'BsmtFin Type 2'] = mode_type2
-        print(f"    {mask.sum()} dòng thiếu BsmtFin Type 2 → mode của nhà có BsmtFin SF 2 > 0")
 
 # ══════════════════════════════════════════════════════════════════════
 # BƯỚC 4: IMPUTATION LOT FRONTAGE VÀ ELECTRICAL
