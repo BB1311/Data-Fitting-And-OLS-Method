@@ -20,9 +20,9 @@ df.columns = df.columns.str.strip()
 print(f"BƯỚC 0: DỮ LIỆU GỐC — {df.shape[0]} dòng, {df.shape[1]} cột")
 
 # ══════════════════════════════════════════════════════════════════════
-# BƯỚC 1: XÓA CỘT ĐỊNH DANH
+# BƯỚC 1: XÓA CỘT ĐỊNH DANH VÀ NEAR-ZERO VARIANCE
 # ══════════════════════════════════════════════════════════════════════
-print("\nBƯỚC 1: XÓA CỘT VÔ DỤNG")
+print("\nBƯỚC 1: XÓA CỘT ĐỊNH DANH VÀ NEAR-ZERO VARIANCE")
 
 # Biến định danh: unique mỗi hàng, không mang thông tin dự báo
 id_cols = ['Order', 'PID']
