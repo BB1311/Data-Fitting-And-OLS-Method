@@ -391,9 +391,6 @@ for col in ['Bsmt Qual', 'Bsmt Cond', 'BsmtFin Type 1', 'BsmtFin Type 2']:
         break
 
 if missing_exists:
-    df['_bsmt_grp'] = pd.qcut(df['Total Bsmt SF'], q=4, labels=['Q1', 'Q2', 'Q3', 'Q4'], duplicates='drop')
-    df['_qual_grp'] = pd.cut(df['Overall Qual'], bins=[0, 4, 6, 10], labels=['low', 'mid', 'high'])
-
     # Bsmt Qual: đánh giá chiều cao tầng hầm → phụ thuộc Total Bsmt SF
     mask = has_b & df['Bsmt Qual'].isna()
     if mask.any():
@@ -432,8 +429,6 @@ if missing_exists:
                 sf_grp = sf_bins[idx]
                 df.loc[idx, col] = mode_by_sf.get(sf_grp, 'Unf')
             print(f"    {mask.sum()} dòng thiếu {col} → mode theo nhóm diện tích {sf_col}")
-
-    df.drop(columns=['_bsmt_grp', '_qual_grp'], inplace=True)
 
     # BsmtFin Type 2: chỉ 1 hàng missing, phân nhóm không có ý nghĩa
     # Điền mode của nhà có tầng hầm và có BsmtFin SF 2 > 0
