@@ -9,10 +9,12 @@ def compute_leverage_and_cooks(
     X_design: np.ndarray, 
     y: np.ndarray, 
     y_hat: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[int]]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[int]]:
     """
+    Tính toán các thông số chẩn đoán phần dư.
+    
     Returns:
-        Tuple: (residuals, internally_stud_res, externally_stud_res, cooks_d, high_leverage_indices)
+        Tuple chứa: (residuals, internally_stud_res, externally_stud_res, leverage, cooks_d, high_leverage_indices)
     """
     n, k = X_design.shape
     residuals = y - y_hat
@@ -82,7 +84,6 @@ def residual_plots(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray):
     ax1.set_ylabel('Phần dư (Residuals)')
 
     # 2. Normal Q-Q Plot (Kiểm tra phân phối chuẩn)
-    ax2 = ax2
     stats.probplot(ext_stud_res, dist="norm", plot=ax2)
     ax2.get_lines()[0].set_alpha(0.6)
     ax2.get_lines()[0].set_markeredgecolor('k')

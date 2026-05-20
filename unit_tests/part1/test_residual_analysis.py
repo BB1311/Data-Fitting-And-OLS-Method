@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from part1.residual_analysis import compute_leverage_and_cooks
 
 def _assert_close(actual, expected, msg=""):
@@ -31,12 +30,8 @@ def test_leverage_and_cooks_known_values():
     # 4. Kiểm tra Cook's Distance
     expected_cooks = [2.5, 0.25, 2.5]
     _assert_close(cooks_d, expected_cooks, msg="Sai giá trị Cook's Distance")
-
-    # 5. Test Externally Studentized Residuals
-    expected_ext_stud = [0.0, 0.0, 0.0]
-    _assert_close(ext_stud_res, expected_ext_stud, msg="Sai giá trị Externally Studentized Residuals")
     
-    # 6. Test High Leverage Indices
+    # 5. Test High Leverage Indices
     assert high_leverage == [], f"Kỳ vọng list rỗng nhưng lại nhận về: {high_leverage}"
 
 def test_leverage_properties():
@@ -109,3 +104,28 @@ def test_high_leverage_point():
     # Vì giới hạn mẫu nhỏ n=4, k=2 khiến ngưỡng 2k/n = 1.0 (không điểm nào vượt qua được).
     # Ta sẽ assert tính chất: Điểm index 3 bắt buộc phải là khứa có độ đòn bẩy CAO NHẤT tập dữ liệu.
     assert np.argmax(leverage) == 3, f"Kỳ vọng điểm index 3 có Leverage lớn nhất, nhưng thực tế là {np.argmax(leverage)}"
+
+def test_externally_studentized_formula():
+    """Test 5: Kiểm chứng công thức Externally Studentized với bộ dữ liệu có đủ bậc tự do (n-k-1 >= 2)."""
+    # Bộ dữ liệu tĩnh n=5, k=2 
+    X_design = np.hstack([np.ones((5, 1)), np.array([[1.], [2.], [3.], [4.], [5.]])])
+    y = np.array([2.1, 3.9, 6.1, 7.9, 10.1])
+    
+    beta, _, _, _ = np.linalg.lstsq(X_design, y, rcond=None)
+    y_hat = X_design @ beta
+
+    _, _, ext_stud, leverage, _, _ = compute_leverage_and_cooks(X_design, y, y_hat)
+
+    # Tính tay theo định nghĩa gốc: t_i = e_i / (s_(i) * sqrt(1-h_ii))
+    n, k = X_design.shape
+    residuals = y - y_hat
+    RSS = np.sum(residuals**2)
+    
+    expected_ext = np.array([
+        residuals[i] / np.sqrt(
+            ((RSS - (residuals[i]**2 / (1 - leverage[i]))) / (n - k - 1)) * (1 - leverage[i])
+        ) for i in range(n)
+    ])
+    
+    np.testing.assert_allclose(ext_stud, expected_ext, rtol=1e-5, atol=1e-5,
+                               err_msg="Externally Studentized Residuals sai công thức thống kê")
