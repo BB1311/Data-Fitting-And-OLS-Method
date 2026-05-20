@@ -72,10 +72,10 @@ def residual_plots(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray):
     
     # Lấy các thông số thống kê
     # Cập nhật dòng này trong hàm residual_plots:
-    residuals, int_stud_res, ext_stud_res, leverage, cooks_d, high_leverage = compute_leverage_and_cooks(X_design, y, y_hat)
+    residuals, int_stud_res, ext_stud_res, _, cooks_d, high_leverage = compute_leverage_and_cooks(X_design, y, y_hat)
 
     # 1. Residuals vs Fitted (Kiểm tra tuyến tính & phương sai)
-    sns.residplot(x=y_hat, y=residuals, lowess=True, 
+    sns.residplot(x=y_hat, y=residuals, lowess=False, 
                   scatter_kws={'alpha': 0.6, 'edgecolor': 'k'}, 
                   line_kws={'color': 'red', 'lw': 2}, ax=ax1)
     ax1.axhline(0, color='grey', linestyle='dashed')
@@ -91,11 +91,11 @@ def residual_plots(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray):
     ax2.get_lines()[1].set_linewidth(2)
     ax2.set_title('2. Normal Q-Q (Externally Studentized)', fontsize=13, fontweight='bold')
     ax2.set_xlabel('Phân vị lý thuyết (Theoretical Quantiles)')
-    ax2.set_ylabel('Phần dư Student hóa ngoài (Externally Studentized)')
+    ax2.set_ylabel('Externally Studentized')
 
     # 3. Scale-Location (Kiểm tra phương sai đồng đều)
     sqrt_abs_std_res = np.sqrt(np.abs(int_stud_res))
-    sns.regplot(x=y_hat, y=sqrt_abs_std_res, lowess=True,
+    sns.regplot(x=y_hat, y=sqrt_abs_std_res, lowess=False,
                 scatter_kws={'alpha': 0.6, 'edgecolor': 'k'}, 
                 line_kws={'color': 'red', 'lw': 2}, ax=ax3)
     ax3.set_title('3. Scale-Location', fontsize=13, fontweight='bold')
