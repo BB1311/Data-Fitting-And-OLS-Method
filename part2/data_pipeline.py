@@ -471,21 +471,21 @@ if missing_exists:
         df.loc[mask, 'Bsmt Qual'] = sf_cuts[mask].map(mode_by_sf).fillna('TA')
         print(f"    {mask.sum()} dòng thiếu Bsmt Qual → mode theo nhóm Total Bsmt SF quantile (has_basement only)")
 
-        # Bsmt Cond: tình trạng bảo trì tầng hầm
-        # Dù global mode là 'TA' (91.8%), nhà trước 1900 chỉ có 67–77% là 'TA'
-        # và tỉ lệ 'Fa' lên đến 28–33% — điền global mode sẽ sai lệch đáng kể.
-        # Dùng mode theo thập niên xây dựng, fallback về 'TA' nếu thập niên không có dữ liệu.
-        mask = has_b & df['Bsmt Cond'].isna()
-        if mask.any():
-            df['_decade'] = (df['Year Built'] // 10) * 10
-            mode_bsmt_cond = (
-                df[has_b & df['Bsmt Cond'].notna()]
-                .groupby('_decade', observed=True)['Bsmt Cond']
-                .agg(lambda x: x.mode()[0] if not x.mode().empty else 'TA')
-            )
-            df.loc[mask, 'Bsmt Cond'] = df.loc[mask, '_decade'].map(mode_bsmt_cond).fillna('TA')
-            df.drop(columns='_decade', inplace=True)
-            print(f"    {mask.sum()} dòng thiếu Bsmt Cond → mode theo thập niên Year Built (fallback: 'TA')")
+    # Bsmt Cond: tình trạng bảo trì tầng hầm
+    # Dù global mode là 'TA' (91.8%), nhà trước 1900 chỉ có 67–77% là 'TA'
+    # và tỉ lệ 'Fa' lên đến 28–33% — điền global mode sẽ sai lệch đáng kể.
+    # Dùng mode theo thập niên xây dựng, fallback về 'TA' nếu thập niên không có dữ liệu.
+    mask = has_b & df['Bsmt Cond'].isna()
+    if mask.any():
+        df['_decade'] = (df['Year Built'] // 10) * 10
+        mode_bsmt_cond = (
+            df[has_b & df['Bsmt Cond'].notna()]
+            .groupby('_decade', observed=True)['Bsmt Cond']
+            .agg(lambda x: x.mode()[0] if not x.mode().empty else 'TA')
+        )
+        df.loc[mask, 'Bsmt Cond'] = df.loc[mask, '_decade'].map(mode_bsmt_cond).fillna('TA')
+        df.drop(columns='_decade', inplace=True)
+        print(f"    {mask.sum()} dòng thiếu Bsmt Cond → mode theo thập niên Year Built (fallback: 'TA')")
 
 # ══════════════════════════════════════════════════════════════════════
 # BƯỚC 4: IMPUTATION LOT FRONTAGE VÀ ELECTRICAL
@@ -532,7 +532,8 @@ def fix_garage_year_blt(df):
 
 # Kiểm tra an toàn chỉ trên nhà có garage
 df = fix_garage_year_blt(df)
-if not (df.loc[mask, 'Garage Yr Blt'] <= df.loc[mask, 'Yr Sold']).all():
+mask_garage_check = df['Has_Garage'] == 1
+if not (df.loc[mask_garage_check, 'Garage Yr Blt'] <= df.loc[mask_garage_check, 'Yr Sold']).all():
     raise ValueError("Phát hiện Garage Yr Blt > Yr Sold sau khi sửa lỗi!")
 
 # Kiểm tra an toàn: nếu vẫn còn NaN ở Garage Yr Blt cho nhà có garage -> báo lỗi
