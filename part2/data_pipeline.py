@@ -397,9 +397,9 @@ for typ_col, sf_col in [('BsmtFin Type 1', 'BsmtFin SF 1'), ('BsmtFin Type 2', '
 mask_total = has_b & df['Total Bsmt SF'].isna()
 if mask_total.any():
     df.loc[mask_total, 'Total Bsmt SF'] = (
-        df.loc[mask_total, 'BsmtFin SF 1']
-        + df.loc[mask_total, 'BsmtFin SF 2']
-        + df.loc[mask_total, 'Bsmt Unf SF']
+        df.loc[mask_total, 'BsmtFin SF 1'].fillna(0)
+        + df.loc[mask_total, 'BsmtFin SF 2'].fillna(0)
+        + df.loc[mask_total, 'Bsmt Unf SF'].fillna(0)
     )
     print(f"    {mask_total.sum()} dòng thiếu Total Bsmt SF → Fin1 + Fin2 + Unf")
 
@@ -408,8 +408,8 @@ mask_unf = has_b & df['Bsmt Unf SF'].isna()
 if mask_unf.any():
     df.loc[mask_unf, 'Bsmt Unf SF'] = (
         df.loc[mask_unf, 'Total Bsmt SF']
-        - df.loc[mask_unf, 'BsmtFin SF 1']
-        - df.loc[mask_unf, 'BsmtFin SF 2']
+        - df.loc[mask_unf, 'BsmtFin SF 1'].fillna(0)
+        - df.loc[mask_unf, 'BsmtFin SF 2'].fillna(0)
     ).clip(lower=0)
     print(f"    {mask_unf.sum()} dòng thiếu Bsmt Unf SF → Total - Fin1 - Fin2")
 
