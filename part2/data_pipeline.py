@@ -36,6 +36,17 @@ df['Has_Alley']        = df['Alley'].notna().astype(int)
 df['Has_Fence']        = df['Fence'].notna().astype(int)
 high_missing_cols = ['Pool QC', 'Misc Feature', 'Alley', 'Fence']
 
+# Flag garage (dùng fillna(0) để xác định có garage ngay cả khi có missing)
+# Anchor: đối chiếu chéo 3 cột để tránh quy kết ẩu
+# Nhà có garage nếu: Garage Type notna HOẶC Garage Area > 0 HOẶC Garage Cars > 0
+# (vì có thể bỏ sót Garage Type nhưng diện tích/số xe vẫn được ghi)
+has_garage = (
+    (df['Garage Area'].fillna(0) > 0) |
+    (df['Garage Cars'].fillna(0) > 0) |
+    (df['Garage Type'].notna() & (df['Garage Type'] != 'None'))
+)
+df['Has_Garage'] = has_garage.astype(int)
+
 # Near-zero variance: gần như hằng số, không phân biệt được nhà
 # Utilities: 99.9% = AllPub; Street: 99.6% = Pave
 nzv_cols = ['Utilities', 'Street']
@@ -124,10 +135,12 @@ else:
 # BƯỚC 3: XỬ LÝ MISSING CÓ CẤU TRÚC
 # ══════════════════════════════════════════════════════════════════════
 print("\nBƯỚC 3: XỬ LÝ MISSING CÓ CẤU TRÚC")
-
 # ── 3.1. Mas Vnr (Lớp ốp đá/gạch) ──────────────────────────────────
 # Anchor: Mas Vnr Area > 0 HOẶC Type không NaN và khác 'None' => có ốp đá
 # Không thể dùng chỉ một trong hai vì có thể một bên bị bỏ sót
+# GHI CHÚ: 'None' là category hợp lệ theo Ames Data Dictionary — trong CSV gốc
+# nó được lưu dưới dạng NaN do export. Code bên dưới chuẩn hóa NaN → 'None'
+# để tường minh hóa "không có ốp đá", thống nhất convention với Garage và Basement.
 print("  3.1. Mas Vnr...")
 has_masonry = (df['Mas Vnr Area'].fillna(0) > 0) | (
     df['Mas Vnr Type'].notna() & (df['Mas Vnr Type'] != 'None')
@@ -149,11 +162,11 @@ if mask_type_missing.any():
         .groupby('_area_group', observed=True)['Mas Vnr Type']
         .agg(lambda x: x.mode()[0] if not x.mode().empty else 'BrkFace')
     )
-    for idx in df.index[mask_type_missing]:
-        grp = df.loc[idx, '_area_group']
-        df.loc[idx, 'Mas Vnr Type'] = (
-            mode_by_area[grp] if grp in mode_by_area.index else 'BrkFace'
-        )
+    df.loc[mask_type_missing, 'Mas Vnr Type'] = (
+        df.loc[mask_type_missing, '_area_group']
+        .map(mode_by_area)
+        .fillna('BrkFace')
+    )
     df.drop(columns='_area_group', inplace=True)
     print(f"    {mask_type_missing.sum()} dòng có ốp đá nhưng thiếu loại → điền mode theo nhóm diện tích")
 
@@ -164,11 +177,11 @@ if mask_area_missing.any():
         df[df['Mas Vnr Area'] > 0]
         .groupby('Mas Vnr Type')['Mas Vnr Area'].median()
     )
-    for idx in df.index[mask_area_missing]:
-        vtype = df.loc[idx, 'Mas Vnr Type']
-        df.loc[idx, 'Mas Vnr Area'] = (
-            median_by_type[vtype] if vtype in median_by_type.index else 0
-        )
+    df.loc[mask_area_missing, 'Mas Vnr Area'] = (
+        df.loc[mask_area_missing, 'Mas Vnr Type']
+        .map(median_by_type)
+        .fillna(0)
+    )
     print(f"    {mask_area_missing.sum()} dòng có ốp đá nhưng thiếu diện tích → median theo loại")
 
 # ── 3.2. Fireplace ──────────────────────────────────────────────────
@@ -186,34 +199,22 @@ if mask_fire.any():
         .groupby(['Overall Qual', 'Bldg Type'], observed=True)['Fireplace Qu']
         .agg(lambda x: x.mode()[0] if not x.mode().empty else 'TA')
     )
-    for idx in df.index[mask_fire]:
-        qual = df.loc[idx, 'Overall Qual']
-        btype = df.loc[idx, 'Bldg Type']
-        key = (qual, btype)
-        df.loc[idx, 'Fireplace Qu'] = mode_by_group.get(key, 'TA')
+    fill_idx = pd.MultiIndex.from_frame(df.loc[mask_fire, ['Overall Qual', 'Bldg Type']])
+    df.loc[mask_fire, 'Fireplace Qu'] = mode_by_group.reindex(fill_idx, fill_value='TA').values
     print(f"    {mask_fire.sum()} dòng có lò sưởi nhưng thiếu Qu → mode theo (Overall Qual, Bldg Type)")
 else:
     print("    OK")
 
 # ── 3.3. Garage ──────────────────────────────────────────────────────
-# Anchor: đối chiếu chéo 3 cột để tránh quy kết ẩu
-# Nhà có garage nếu: Garage Type notna HOẶC Garage Area > 0 HOẶC Garage Cars > 0
-# (vì có thể bỏ sót Garage Type nhưng diện tích/số xe vẫn được ghi)
 print("  3.3. Garage...")
-has_garage = (
-    (df['Garage Area'].fillna(0) > 0) |
-    (df['Garage Cars'].fillna(0) > 0) |
-    (df['Garage Type'].notna() & (df['Garage Type'] != 'None'))
-)
-no_garage = ~has_garage
+# Nhà có garage — xử lý từng biến theo logic riêng:
+has_g = df['Has_Garage'].astype(bool)
+no_garage = ~has_g
 
 # Nhà không có garage: tất cả biến garage = giá trị "không tồn tại"
 for col in ['Garage Type', 'Garage Finish', 'Garage Qual', 'Garage Cond']:
     df.loc[no_garage, col] = 'None'
 df.loc[no_garage, ['Garage Cars', 'Garage Area']] = 0
-
-# Nhà có garage — xử lý từng biến theo logic riêng:
-has_g = has_garage
 
 # Garage Yr Blt: điền theo median của nhóm (Year Built ÷ 10) × (Garage Type)
 # Lý do: năm xây garage gắn chặt với năm xây nhà VÀ loại garage
@@ -230,15 +231,16 @@ if mask_yr.any():
     # Fallback 2: median toàn cục (dùng nếu vẫn không có)
     global_median = df[df['Garage Yr Blt'].notna()]['Garage Yr Blt'].median()
 
-    for idx in df.index[mask_yr]:
-        dec = df.loc[idx, '_decade']
-        gt = df.loc[idx, 'Garage Type'] if pd.notna(df.loc[idx, 'Garage Type']) else 'Attchd'
-        if (dec, gt) in median_yr.index:
-            df.loc[idx, 'Garage Yr Blt'] = median_yr[(dec, gt)]
-        elif gt in median_by_type.index:
-            df.loc[idx, 'Garage Yr Blt'] = median_by_type[gt]
-        else:
-            df.loc[idx, 'Garage Yr Blt'] = global_median
+    missing = df.loc[mask_yr, ['_decade', 'Garage Type']].copy()
+    missing['Garage Type'] = missing['Garage Type'].fillna('Attchd')
+
+    med1 = median_yr.reset_index(name='val1')
+    med2 = median_by_type.reset_index(name='val2')
+    missing = missing.merge(med1, on=['_decade', 'Garage Type'], how='left')
+    missing = missing.merge(med2, on='Garage Type', how='left')
+    result = missing['val1'].fillna(missing['val2']).fillna(global_median)
+
+    df.loc[mask_yr, 'Garage Yr Blt'] = result.values
     df.drop(columns='_decade', inplace=True)
     print(f"    {mask_yr.sum()} dòng thiếu Garage Yr Blt → median theo thập niên × loại garage (fallback: loại → toàn cục)")
 
@@ -251,27 +253,31 @@ if mask_area.any():
         df[df['Garage Area'] > 0]
         .groupby('Garage Type')['Garage Area'].median()
     )
-    for idx in df.index[mask_area]:
-        gt = df.loc[idx, 'Garage Type']
-        df.loc[idx, 'Garage Area'] = (
-            median_area_by_type[gt] if gt in median_area_by_type.index else 400
-        )
+    df.loc[mask_area, 'Garage Area'] = (
+        df.loc[mask_area, 'Garage Type']
+        .map(median_area_by_type)
+        .fillna(400)
+    )
     print(f"    {mask_area.sum()} dòng thiếu Garage Area → median theo Garage Type")
 
 # Garage Cars: điền theo median của Garage Area
 mask_cars = has_g & df['Garage Cars'].isna()
 if mask_cars.any():
     # Chỉ lấy các dòng có Garage Cars > 0 và Garage Area > 0 để tính bins và median
-    valid_cars = df[df['Garage Cars'] > 0 & (df['Garage Area'] > 0)]
+    valid_cars = df[(df['Garage Cars'] > 0) & (df['Garage Area'] > 0)]
     if len(valid_cars) > 0:
         # Tạo bins dựa trên diện tích của valid_cars
         area_bins_valid = pd.cut(valid_cars['Garage Area'], bins=[0, 300, 500, 1000, 2000])
         median_cars_by_area = valid_cars.groupby(area_bins_valid, observed=True)['Garage Cars'].median()
         # Dùng toàn bộ df để gán bin cho từng dòng cần impute
+        # Bins [0, 300, 500, 1000, 2000] được chọn dựa trên phân phối Garage Area:
+        #   - <300 sq.ft  : garage nhỏ (CarPort, Detchd 1 xe) → thường 1 xe
+        #   - 300–500     : garage tiêu chuẩn (Attchd 1–2 xe) → thường 2 xe
+        #   - 500–1000    : garage lớn (Attchd/BuiltIn 2–3 xe) → thường 2 xe
+        #   - >1000       : garage rất lớn → thường 3 xe
+        # Nếu thêm dữ liệu từ nguồn khác, nên thay bằng quantile-based bins.
         area_bins_all = pd.cut(df['Garage Area'], bins=[0, 300, 500, 1000, 2000])
-        for idx in df.index[mask_cars]:
-            bin_ = area_bins_all[idx]
-            df.loc[idx, 'Garage Cars'] = median_cars_by_area.get(bin_, 2)
+        df.loc[mask_cars, 'Garage Cars'] = area_bins_all[mask_cars].map(median_cars_by_area).fillna(2)
     else:
         # Fallback: không có dữ liệu valid, gán 2 (mặc định)
         df.loc[mask_cars, 'Garage Cars'] = 2
@@ -285,24 +291,23 @@ df['_qual_group'] = pd.cut(df['Overall Qual'], bins=[0, 4, 6, 10], labels=['low'
 for col in ['Garage Finish', 'Garage Qual', 'Garage Cond']:
     mask_cat = has_g & df[col].isna()
     if mask_cat.any():
-        mode_by_type_qual = (
-            df[df[col].notna() & (df[col] != 'None')]
-            .groupby(['Garage Type', '_qual_group'], observed=True)[col]
-            .agg(lambda x: x.mode()[0] if not x.mode().empty else 'TA')
+        valid = df[col].notna() & (df[col] != 'None')
+        # Mode theo (Garage Type, _qual_group)
+        mode1 = df[valid].groupby(['Garage Type', '_qual_group'], observed=True)[col].agg(
+            lambda x: x.mode()[0] if not x.mode().empty else 'TA'
         )
-        for idx in df.index[mask_cat]:
-            gt = df.loc[idx, 'Garage Type']
-            qg = df.loc[idx, '_qual_group']
-            if (gt, qg) in mode_by_type_qual.index:
-                df.loc[idx, col] = mode_by_type_qual[(gt, qg)]
-            else:
-                # fallback: mode theo Garage Type (bỏ qua qual_group)
-                mode_by_type_only = (
-                    df[df[col].notna() & (df[col] != 'None')]
-                    .groupby('Garage Type')[col]
-                    .agg(lambda x: x.mode()[0] if not x.mode().empty else 'TA')
-                )
-                df.loc[idx, col] = mode_by_type_only.get(gt, 'TA')
+        mode1_df = mode1.reset_index(name='mode1')
+        # Mode chỉ theo Garage Type (fallback)
+        mode2 = df[valid].groupby('Garage Type')[col].agg(
+            lambda x: x.mode()[0] if not x.mode().empty else 'TA'
+        )
+        mode2_df = mode2.reset_index(name='mode2')
+
+        missing = df.loc[mask_cat, ['Garage Type', '_qual_group']].copy()
+        missing = missing.merge(mode1_df, on=['Garage Type', '_qual_group'], how='left')
+        missing = missing.merge(mode2_df, on='Garage Type', how='left')
+        filled = missing['mode1'].fillna(missing['mode2']).fillna('TA')
+        df.loc[mask_cat, col] = filled.values
 
         print(f"    {mask_cat.sum()} dòng thiếu {col} → mode theo nhóm Garage Type và Overall Qual")
 # Sau vòng lặp, xóa cột _qual_group
@@ -321,11 +326,7 @@ if mask_type.any():
     )
     # Dùng toàn bộ df để gán bin cho từng hàng cần impute
     area_cuts_all = pd.cut(df['Garage Area'], bins=[0, 300, 500, 1000])
-    for idx in df.index[mask_type]:
-        bin_ = area_cuts_all[idx]
-        df.loc[idx, 'Garage Type'] = (
-            mode_by_area[bin_] if bin_ in mode_by_area.index else 'Attchd'
-        )
+    df.loc[mask_type, 'Garage Type'] = area_cuts_all[mask_type].map(mode_by_area).fillna('Attchd')
     print(f"    {mask_type.sum()} dòng thiếu Garage Type → mode theo nhóm diện tích")
 
 if not (mask_yr.any() or mask_area.any() or mask_cars.any() or mask_type.any()):
@@ -364,9 +365,7 @@ for typ_col, sf_col in [('BsmtFin Type 1', 'BsmtFin SF 1'), ('BsmtFin Type 2', '
     if mask_missing_sf.any():
         # Tính median của SF cho từng loại Type (chỉ dùng các dòng có SF > 0)
         median_by_type = df[df[sf_col].notna() & (df[typ_col] != 'None')].groupby(typ_col)[sf_col].median()
-        for idx in df.index[mask_missing_sf]:
-            typ = df.loc[idx, typ_col]
-            df.loc[idx, sf_col] = median_by_type.get(typ, 0)
+        df.loc[mask_missing_sf, sf_col] = df.loc[mask_missing_sf, typ_col].map(median_by_type).fillna(0)
         print(f"    {mask_missing_sf.sum()} dòng thiếu {sf_col} → median theo {typ_col}")
 
 # Trường hợp 2: biết diện tích (SF), thiếu loại hoàn thiện (Type) → mode theo nhóm diện tích ---
@@ -386,9 +385,7 @@ for typ_col, sf_col in [('BsmtFin Type 1', 'BsmtFin SF 1'), ('BsmtFin Type 2', '
                 .groupby(sf_bins, observed=True)[typ_col]
                 .agg(lambda x: x.mode()[0] if not x.mode().empty else 'Unf')
             )
-            for idx in df.index[mask_missing_type]:
-                grp = sf_bins[idx]
-                df.loc[idx, typ_col] = mode_by_bin.get(grp, 'Unf')
+            df.loc[mask_missing_type, typ_col] = sf_bins[mask_missing_type].map(mode_by_bin).fillna('Unf')
         else:
             # Fallback: nếu không đủ dữ liệu để chia nhóm, dùng mode chung của các dòng có SF>0
             mode_val = df.loc[df[sf_col] > 0, typ_col].mode()
@@ -436,12 +433,7 @@ if mask_exp.any():
     )
     # Fallback toàn cục (nếu loại Type không có trong mode_by_type)
     global_mode = df.loc[has_b & df['Bsmt Exposure'].notna(), 'Bsmt Exposure'].mode()[0]
-    for idx in df.index[mask_exp]:
-        btype = df.loc[idx, 'BsmtFin Type 1']
-        if btype in mode_by_type.index:
-            df.loc[idx, 'Bsmt Exposure'] = mode_by_type[btype]
-        else:
-            df.loc[idx, 'Bsmt Exposure'] = global_mode
+    df.loc[mask_exp, 'Bsmt Exposure'] = df.loc[mask_exp, 'BsmtFin Type 1'].map(mode_by_type).fillna(global_mode)
     print(f"    {mask_exp.sum()} dòng thiếu Bsmt Exposure (có tầng hầm) → mode theo BsmtFin Type 1")
 else:
     print("    OK")
@@ -457,35 +449,51 @@ if missing_exists:
     # Bsmt Qual: đánh giá chiều cao tầng hầm → phụ thuộc Total Bsmt SF
     mask = has_b & df['Bsmt Qual'].isna()
     if mask.any():
+        # Dùng điều kiện notna() & > 0 thay vì chỉ has_b để đảm bảo sf_valid
+        # không chứa NaN — tránh index mismatch với groupby nếu has_basement
+        # được mở rộng sau này với điều kiện khác ngoài Total Bsmt SF > 0.
         sf_valid = df.loc[has_b & df['Total Bsmt SF'].notna() & (df['Total Bsmt SF'] > 0), 'Total Bsmt SF']
         bins = pd.qcut(sf_valid, q=4, duplicates='drop', retbins=True)[1]
 
-        mode_by_sf = (
-            df[df['Bsmt Qual'].notna() & (df['Bsmt Qual'] != 'None') & has_b]
-            .groupby(pd.cut(sf_valid, bins=bins), observed=True)['Bsmt Qual']
-            .agg(lambda x: x.mode()[0] if not x.mode().empty else 'TA')
+        valid_rows = df[
+            df['Bsmt Qual'].notna() &
+            (df['Bsmt Qual'] != 'None') &
+            has_b &
+            df['Total Bsmt SF'].notna() &
+            (df['Total Bsmt SF'] > 0)
+            ]
+        valid_cuts = pd.cut(valid_rows['Total Bsmt SF'], bins=bins)
+        mode_by_sf = valid_rows.groupby(valid_cuts, observed=True)['Bsmt Qual'].agg(
+            lambda x: x.mode()[0] if not x.mode().empty else 'TA'
         )
+
         sf_cuts = pd.cut(df['Total Bsmt SF'], bins=bins)
-        for idx in df.index[mask]:
-            grp = sf_cuts[idx]
-            df.loc[idx, 'Bsmt Qual'] = mode_by_sf.get(grp, 'TA')
+        df.loc[mask, 'Bsmt Qual'] = sf_cuts[mask].map(mode_by_sf).fillna('TA')
         print(f"    {mask.sum()} dòng thiếu Bsmt Qual → mode theo nhóm Total Bsmt SF quantile (has_basement only)")
 
-    # Bsmt Cond: tình trạng bảo trì tầng hầm, có 89% = 'TA', tương quan với Overall Cond chỉ 0.11
-    # Phân nhóm theo Overall Cond không mang thêm thông tin.
-    # Dù Year Built có tương quan cao nhất (r=0.22), 'TA' chiếm 83–94% ở mọi nhóm năm xây dựng.
-    # Phân nhóm thêm không thay đổi kết quả → điền 'TA' trực tiếp.
-    mask = has_b & df['Bsmt Cond'].isna()
-    if mask.any():
-        df.loc[mask, 'Bsmt Cond'] = 'TA'
-        print(f"    {mask.sum()} dòng thiếu Bsmt Cond → 'TA' (chiếm 89% giá trị)")
+        # Bsmt Cond: tình trạng bảo trì tầng hầm
+        # Dù global mode là 'TA' (91.8%), nhà trước 1900 chỉ có 67–77% là 'TA'
+        # và tỉ lệ 'Fa' lên đến 28–33% — điền global mode sẽ sai lệch đáng kể.
+        # Dùng mode theo thập niên xây dựng, fallback về 'TA' nếu thập niên không có dữ liệu.
+        mask = has_b & df['Bsmt Cond'].isna()
+        if mask.any():
+            df['_decade'] = (df['Year Built'] // 10) * 10
+            mode_bsmt_cond = (
+                df[has_b & df['Bsmt Cond'].notna()]
+                .groupby('_decade', observed=True)['Bsmt Cond']
+                .agg(lambda x: x.mode()[0] if not x.mode().empty else 'TA')
+            )
+            df.loc[mask, 'Bsmt Cond'] = df.loc[mask, '_decade'].map(mode_bsmt_cond).fillna('TA')
+            df.drop(columns='_decade', inplace=True)
+            print(f"    {mask.sum()} dòng thiếu Bsmt Cond → mode theo thập niên Year Built (fallback: 'TA')")
 
 # ══════════════════════════════════════════════════════════════════════
 # BƯỚC 4: IMPUTATION LOT FRONTAGE VÀ ELECTRICAL
 # ══════════════════════════════════════════════════════════════════════
 print("\nBƯỚC 4: IMPUTATION LOT FRONTAGE VÀ ELECTRICAL")
-
-# Lot Frontage (~16.7% missing): MAR — bị bỏ sót khi đo đạc hoặc MCAR — bị bỏ sót ngẫu nhiên trong quá trình thu thập.
+# Lot Frontage (~16.7% missing): MAR —  missing rate biến thiên mạnh theo Neighborhood
+# (BrDale/Blueste: 0%, GrnHill/Landmrk: 100%, CulDSac: 48.9%) cho thấy missing
+# phụ thuộc vào Neighborhood → MAR
 # Grouped median theo Neighborhood vì mặt tiền phụ thuộc mạnh vào khu vực
 # (dao động 21–92 ft theo neighborhood, khác rất nhiều so với global median 68 ft)
 print("  4.1. Lot Frontage → grouped median theo Neighborhood")
@@ -507,10 +515,25 @@ df['Electrical'] = df['Electrical'].fillna(df['Electrical'].mode()[0])
 # BƯỚC 5: TẠO BIẾN MỚI, XÓA BIẾN GỐC
 # ══════════════════════════════════════════════════════════════════════
 print("\nBƯỚC 5: TẠO BIẾN MỚI, XÓA BIẾN GỐC")
+# Kiếm tra Garage Yr Blt > Yr Sold trước khi tạo biến Garage_Age
+def fix_garage_year_blt(df):
+    """
+    Xử lý các giá trị Garage Yr Blt bất hợp lý:
+    - Nếu > Yr Sold => lỗi nhập liệu => thay thế bằng Year Built.
+    - Nếu < Year Built - 5 và Garage không phải Attchd => giữ nguyên (nhà mua đất có garage cũ).
+    """
+    # Sửa các giá trị vượt quá năm bán (lỗi nhập liệu rõ ràng)
+    mask_future = df['Garage Yr Blt'] > df['Yr Sold']
+    if mask_future.any():
+        print(f"[CẢNH BÁO] {mask_future.sum()} dòng có Garage Yr Blt > Yr Sold. "
+              f"Đã thay thế bằng Year Built.")
+        df.loc[mask_future, 'Garage Yr Blt'] = df.loc[mask_future, 'Year Built']
+    return df
 
-# Biến cờ có garage (đã có từ bước 3, nhưng lưu lại)
-df['Has_Garage'] = has_garage.astype(int)
-print("  - Has_Garage (cờ có garage)")
+# Kiểm tra an toàn chỉ trên nhà có garage
+df = fix_garage_year_blt(df)
+if not (df.loc[mask, 'Garage Yr Blt'] <= df.loc[mask, 'Yr Sold']).all():
+    raise ValueError("Phát hiện Garage Yr Blt > Yr Sold sau khi sửa lỗi!")
 
 # Kiểm tra an toàn: nếu vẫn còn NaN ở Garage Yr Blt cho nhà có garage -> báo lỗi
 if ((df['Has_Garage'] == 1) & (df['Garage Yr Blt'].isna())).any():
@@ -521,7 +544,7 @@ df['Garage_Age'] = np.where(
     df['Has_Garage'] == 1,
     df['Yr Sold'] - df['Garage Yr Blt'],
     0   # sentinel: nhà không có garage thì tuổi = 0
-)
+).astype(int)
 print("  - Garage_Age (tuổi garage, =0 nếu không có garage)")
 
 # Nếu muốn giữ Garage Yr Blt gốc, có thể thay NaN bằng sentinel -1
