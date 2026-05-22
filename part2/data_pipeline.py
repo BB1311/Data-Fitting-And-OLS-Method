@@ -621,3 +621,525 @@ else:
         f"Các cột còn missing:\n{still_missing}\n"
         f"Kiểm tra lại logic từng cột trước khi thêm xử lý."
     )
+
+
+"""
+data_pipeline.py
+================
+Pipeline tiền xử lý dữ liệu cho Đồ án 2 — Phần 2.
+
+Quy trình (sau khi đã chạy clean_data.py):
+  1. Tách target (SalePrice) khỏi features
+  2. Phát hiện và xử lý outlier (Winsorize hoặc loại bỏ)
+  3. Encoding biến phân loại:
+       - Ordinal encoding (các cột có thứ bậc rõ ràng)
+       - One-hot encoding (các cột danh nghĩa)
+  4. Chuẩn hóa biến liên tục (z-score standardization)
+  5. VIF check (phát hiện đa cộng tuyến)
+
+Usage
+-----
+    from data_pipeline import DataPipeline, run_vif_check
+
+    pipe = DataPipeline(
+        outlier_method='winsorize',   # hoặc 'remove'
+        outlier_threshold=0.05,       # winsorize: cắt 5% mỗi đầu; remove: IQR*1.5
+        encoding='auto',              # 'auto' | 'onehot_only' | 'ordinal_only'
+        scale=True,
+    )
+
+    X_train_clean = pipe.fit_transform(X_train, y_train)
+    X_test_clean  = pipe.transform(X_test)
+
+    vif_df = run_vif_check(X_train_clean, threshold=10)
+    X_train_no_mc, dropped = pipe.drop_high_vif(X_train_clean, threshold=10)
+"""
+
+import warnings
+import numpy as np
+import pandas as pd
+from scipy.stats.mstats import winsorize
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 0. MAPPING ORDINAL — tùy chỉnh theo Ames Housing Data Dictionary
+# ══════════════════════════════════════════════════════════════════════
+ORDINAL_MAPS = {
+    # Chất lượng / tình trạng chung
+    'Overall Qual':   {1:1,2:2,3:3,4:4,5:5,6:6,7:7,8:8,9:9,10:10},  # giữ nguyên
+    'Overall Cond':   {1:1,2:2,3:3,4:4,5:5,6:6,7:7,8:8,9:9,10:10},
+
+    # Ex=5, Gd=4, TA=3, Fa=2, Po=1, None=0
+    'Exter Qual':     {'None':0,'Po':1,'Fa':2,'TA':3,'Gd':4,'Ex':5},
+    'Exter Cond':     {'None':0,'Po':1,'Fa':2,'TA':3,'Gd':4,'Ex':5},
+    'Bsmt Qual':      {'None':0,'Po':1,'Fa':2,'TA':3,'Gd':4,'Ex':5},
+    'Bsmt Cond':      {'None':0,'Po':1,'Fa':2,'TA':3,'Gd':4,'Ex':5},
+    'Heating QC':     {'None':0,'Po':1,'Fa':2,'TA':3,'Gd':4,'Ex':5},
+    'Kitchen Qual':   {'None':0,'Po':1,'Fa':2,'TA':3,'Gd':4,'Ex':5},
+    'Fireplace Qu':   {'None':0,'Po':1,'Fa':2,'TA':3,'Gd':4,'Ex':5},
+    'Garage Qual':    {'None':0,'Po':1,'Fa':2,'TA':3,'Gd':4,'Ex':5},
+    'Garage Cond':    {'None':0,'Po':1,'Fa':2,'TA':3,'Gd':4,'Ex':5},
+    'Pool QC':        {'None':0,'Fa':1,'TA':2,'Gd':3,'Ex':4},
+
+    # Exposure
+    'Bsmt Exposure':  {'None':0,'No':1,'Mn':2,'Av':3,'Gd':4},
+
+    # Finish types
+    'BsmtFin Type 1': {'None':0,'Unf':1,'LwQ':2,'Rec':3,'BLQ':4,'ALQ':5,'GLQ':6},
+    'BsmtFin Type 2': {'None':0,'Unf':1,'LwQ':2,'Rec':3,'BLQ':4,'ALQ':5,'GLQ':6},
+    'Garage Finish':  {'None':0,'Unf':1,'RFn':2,'Fin':3},
+
+    # Slope
+    'Land Slope':     {'Gtl':0,'Mod':1,'Sev':2},
+
+    # Lot Shape
+    'Lot Shape':      {'IR3':0,'IR2':1,'IR1':2,'Reg':3},
+
+    # Paved Drive
+    'Paved Drive':    {'N':0,'P':1,'Y':2},
+
+    # Fence (nếu chưa drop — ở đây đã drop, để sẵn)
+    'Fence':          {'None':0,'MnWw':1,'GdWo':2,'MnPrv':3,'GdPrv':4},
+
+    # Functional
+    'Functional':     {'Sal':0,'Sev':1,'Maj2':2,'Maj1':3,'Mod':4,'Min2':5,'Min1':6,'Typ':7},
+}
+
+# Các cột danh nghĩa (không có thứ bậc) → One-hot encoding
+NOMINAL_COLS = [
+    'MS SubClass', 'MS Zoning', 'Lot Config', 'Neighborhood',
+    'Bldg Type', 'House Style', 'Roof Style', 'Roof Matl',
+    'Exterior 1st', 'Exterior 2nd', 'Mas Vnr Type',
+    'Foundation', 'Heating', 'Central Air',
+    'Electrical', 'Garage Type',
+    'Sale Type', 'Sale Condition',
+    'Land Contour',
+]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 1. HÀM TIỆN ÍCH — VIF
+# ══════════════════════════════════════════════════════════════════════
+def run_vif_check(X: pd.DataFrame, threshold: float = 10.0) -> pd.DataFrame:
+    """
+    Tính VIF cho tất cả các cột số trong X.
+
+    VIF_j = 1 / (1 - R²_j), trong đó R²_j là R² khi hồi quy cột j
+    theo tất cả các cột còn lại.
+
+    Parameters
+    ----------
+    X         : DataFrame chứa toàn bộ features (đã encode và scale)
+    threshold : Ngưỡng cảnh báo đa cộng tuyến (thường 5 hoặc 10)
+
+    Returns
+    -------
+    DataFrame với cột 'feature' và 'VIF', sắp xếp giảm dần theo VIF.
+    """
+    from numpy.linalg import lstsq
+
+    X_num = X.select_dtypes(include=[np.number]).copy()
+    X_num = X_num.dropna(axis=1)
+    cols = X_num.columns.tolist()
+
+    vifs = []
+    for j, col in enumerate(cols):
+        y_j = X_num[col].values
+        X_others = X_num.drop(columns=[col]).values
+
+        # Thêm intercept
+        X_others_int = np.column_stack([np.ones(len(X_others)), X_others])
+        beta, _, _, _ = lstsq(X_others_int, y_j, rcond=None)
+        y_pred = X_others_int @ beta
+
+        ss_res = np.sum((y_j - y_pred) ** 2)
+        ss_tot = np.sum((y_j - y_j.mean()) ** 2)
+
+        r2 = 1 - ss_res / ss_tot if ss_tot > 1e-10 else 0.0
+        vif = 1 / (1 - r2) if r2 < 1 - 1e-10 else np.inf
+        vifs.append({'feature': col, 'VIF': round(vif, 2)})
+
+    vif_df = pd.DataFrame(vifs).sort_values('VIF', ascending=False).reset_index(drop=True)
+
+    high_vif = vif_df[vif_df['VIF'] > threshold]
+    if not high_vif.empty:
+        print(f"\n[VIF] {len(high_vif)} cột có VIF > {threshold} (đa cộng tuyến cao):")
+        print(high_vif.to_string(index=False))
+    else:
+        print(f"\n[VIF] Không có cột nào có VIF > {threshold}. OK.")
+
+    return vif_df
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 2. CLASS DataPipeline
+# ══════════════════════════════════════════════════════════════════════
+class DataPipeline:
+    """
+    Pipeline tiền xử lý dữ liệu cho Phần 2.
+
+    Các bước (theo thứ tự fit → transform):
+      (A) Outlier detection & treatment
+      (B) Ordinal encoding
+      (C) One-hot encoding
+      (D) Z-score standardization (chỉ các cột số)
+
+    Tham số
+    -------
+    outlier_method : 'winsorize' | 'remove' | None
+        - 'winsorize': Winsorize target và các cột số liên tục
+          (giới hạn 2 đầu theo outlier_threshold).
+        - 'remove'   : Xóa hàng nếu bất kỳ biến số liên tục nào nằm
+          ngoài [Q1 - iqr_factor*IQR, Q3 + iqr_factor*IQR].
+        - None       : Bỏ qua bước này.
+    outlier_threshold : float (default 0.05)
+        Chỉ dùng với 'winsorize': cắt outlier_threshold ở mỗi đuôi.
+    iqr_factor : float (default 1.5)
+        Chỉ dùng với 'remove': hệ số nhân IQR.
+    outlier_cols : list | None
+        Nếu None, tự động lấy tất cả cột float64 liên tục.
+        Truyền list để chỉ định rõ cột nào cần xử lý outlier.
+    encoding : 'auto' | 'onehot_only' | 'ordinal_only'
+        'auto'          : ordinal với cột trong ORDINAL_MAPS, one-hot với NOMINAL_COLS.
+        'onehot_only'   : one-hot toàn bộ categorical.
+        'ordinal_only'  : ordinal toàn bộ (dùng mã số 0,1,2…).
+    scale : bool (default True)
+        Chuẩn hóa z-score các cột số.
+    drop_first : bool (default True)
+        Loại bỏ cột đầu tiên trong one-hot để tránh bẫy biến giả.
+    """
+
+    def __init__(
+        self,
+        outlier_method: str | None = 'winsorize',
+        outlier_threshold: float = 0.05,
+        iqr_factor: float = 1.5,
+        outlier_cols: list | None = None,
+        encoding: str = 'auto',
+        scale: bool = True,
+        drop_first: bool = True,
+    ):
+        self.outlier_method    = outlier_method
+        self.outlier_threshold = outlier_threshold
+        self.iqr_factor        = iqr_factor
+        self.outlier_cols      = outlier_cols
+        self.encoding          = encoding
+        self.scale             = scale
+        self.drop_first        = drop_first
+
+        # Học từ train set
+        self._winsor_limits: dict  = {}   # {col: (lower, upper)}
+        self._iqr_bounds: dict     = {}   # {col: (lower_bound, upper_bound)}
+        self._scale_params: dict   = {}   # {col: (mean, std)}
+        self._onehot_cols_: list   = []   # cột được one-hot
+        self._ordinal_cols_: list  = []   # cột được ordinal
+        self._dummy_cols_: list    = []   # tên cột sau khi get_dummies
+        self._feature_names_: list = []   # tên features cuối cùng
+        self._fitted = False
+
+    # ------------------------------------------------------------------
+    # PHẦN A: Outlier
+    # ------------------------------------------------------------------
+    def _detect_outlier_cols(self, X: pd.DataFrame) -> list:
+        """Tự động chọn các cột số liên tục để xử lý outlier."""
+        num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+        # Bỏ qua cột nhị phân (chỉ có 0/1) và cột đếm nhỏ (Garage Cars, v.v.)
+        continuous = [
+            c for c in num_cols
+            if X[c].nunique() > 10 and c not in ('Mo Sold',)
+        ]
+        return continuous
+
+    def _fit_outlier(self, X: pd.DataFrame, y: pd.Series | None = None):
+        cols = self.outlier_cols if self.outlier_cols else self._detect_outlier_cols(X)
+        self._outlier_cols_fitted = cols
+
+        if self.outlier_method == 'winsorize':
+            lo = self.outlier_threshold
+            hi = 1 - self.outlier_threshold
+            for col in cols:
+                vals = X[col].dropna()
+                self._winsor_limits[col] = (vals.quantile(lo), vals.quantile(hi))
+            # Xử lý cả target nếu được truyền vào
+            if y is not None:
+                vals_y = y.dropna()
+                self._winsor_limits['__target__'] = (
+                    vals_y.quantile(lo), vals_y.quantile(hi)
+                )
+
+        elif self.outlier_method == 'remove':
+            for col in cols:
+                q1 = X[col].quantile(0.25)
+                q3 = X[col].quantile(0.75)
+                iqr = q3 - q1
+                self._iqr_bounds[col] = (
+                    q1 - self.iqr_factor * iqr,
+                    q3 + self.iqr_factor * iqr,
+                )
+
+    def _transform_outlier_X(self, X: pd.DataFrame) -> pd.DataFrame:
+        X = X.copy()
+        if self.outlier_method == 'winsorize':
+            for col, (lo, hi) in self._winsor_limits.items():
+                if col == '__target__' or col not in X.columns:
+                    continue
+                X[col] = X[col].clip(lower=lo, upper=hi)
+
+        elif self.outlier_method == 'remove':
+            # Trên train: hàng nằm ngoài sẽ bị xóa
+            # Trên test: clip thay vì xóa để không mất hàng
+            for col, (lb, ub) in self._iqr_bounds.items():
+                if col in X.columns:
+                    X[col] = X[col].clip(lower=lb, upper=ub)
+        return X
+
+    def _remove_outlier_rows(self, X: pd.DataFrame, y: pd.Series) -> tuple:
+        """Xóa hàng outlier (chỉ dùng trên train set với method='remove')."""
+        if self.outlier_method != 'remove':
+            return X, y
+        mask = pd.Series(True, index=X.index)
+        for col, (lb, ub) in self._iqr_bounds.items():
+            if col in X.columns:
+                mask &= (X[col] >= lb) & (X[col] <= ub)
+        n_removed = (~mask).sum()
+        if n_removed > 0:
+            print(f"  [Outlier-remove] Đã xóa {n_removed} hàng outlier trên train set.")
+        return X[mask].copy(), y[mask].copy()
+
+    # ------------------------------------------------------------------
+    # PHẦN B: Encoding
+    # ------------------------------------------------------------------
+    def _fit_encoding(self, X: pd.DataFrame):
+        cat_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
+
+        if self.encoding == 'auto':
+            self._ordinal_cols_ = [c for c in ORDINAL_MAPS if c in cat_cols]
+            remaining = [c for c in cat_cols if c not in self._ordinal_cols_]
+            self._onehot_cols_ = [c for c in NOMINAL_COLS if c in remaining]
+            # Cột categorical còn lại chưa được phân loại → one-hot luôn
+            uncategorized = [c for c in remaining if c not in self._onehot_cols_]
+            if uncategorized:
+                print(f"  [Encoding] {len(uncategorized)} cột categorical chưa được phân loại "
+                      f"→ tự động one-hot: {uncategorized}")
+                self._onehot_cols_ += uncategorized
+
+        elif self.encoding == 'onehot_only':
+            self._ordinal_cols_ = []
+            self._onehot_cols_ = cat_cols
+
+        elif self.encoding == 'ordinal_only':
+            self._ordinal_cols_ = cat_cols
+            self._onehot_cols_ = []
+        else:
+            raise ValueError(f"encoding phải là 'auto', 'onehot_only', hoặc 'ordinal_only'.")
+
+    def _apply_ordinal(self, X: pd.DataFrame) -> pd.DataFrame:
+        X = X.copy()
+        for col in self._ordinal_cols_:
+            if col not in X.columns:
+                continue
+            if col in ORDINAL_MAPS:
+                X[col] = X[col].map(ORDINAL_MAPS[col])
+                # Giá trị không tìm thấy trong map → -1 (cần kiểm tra)
+                if X[col].isna().any():
+                    missing_vals = set(X[col][X[col].isna()].index)
+                    warnings.warn(
+                        f"[Ordinal] Cột '{col}': {X[col].isna().sum()} giá trị "
+                        f"không nằm trong map → điền median.",
+                        UserWarning
+                    )
+                    X[col] = X[col].fillna(X[col].median())
+            else:
+                # ordinal_only mode: dùng rank/category codes
+                X[col] = pd.Categorical(X[col]).codes
+        return X
+
+    def _fit_onehot(self, X: pd.DataFrame):
+        """Ghi nhớ tên cột dummy từ train set."""
+        if not self._onehot_cols_:
+            self._dummy_cols_ = []
+            return
+        X_sub = X[[c for c in self._onehot_cols_ if c in X.columns]]
+        dummies = pd.get_dummies(X_sub, drop_first=self.drop_first, dtype=int)
+        self._dummy_cols_ = dummies.columns.tolist()
+
+    def _apply_onehot(self, X: pd.DataFrame) -> pd.DataFrame:
+        if not self._onehot_cols_:
+            return X
+        cols_present = [c for c in self._onehot_cols_ if c in X.columns]
+        X_sub = X[cols_present]
+        dummies = pd.get_dummies(X_sub, drop_first=self.drop_first, dtype=int)
+
+        # Đảm bảo test set có đúng cột như train set
+        dummies = dummies.reindex(columns=self._dummy_cols_, fill_value=0)
+
+        X = X.drop(columns=cols_present)
+        X = pd.concat([X, dummies], axis=1)
+        return X
+
+    # ------------------------------------------------------------------
+    # PHẦN C: Standardization
+    # ------------------------------------------------------------------
+    def _fit_scale(self, X: pd.DataFrame):
+        num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+        for col in num_cols:
+            mu  = X[col].mean()
+            std = X[col].std(ddof=1)
+            self._scale_params[col] = (mu, std if std > 1e-8 else 1.0)
+
+    def _apply_scale(self, X: pd.DataFrame) -> pd.DataFrame:
+        X = X.copy()
+        for col, (mu, std) in self._scale_params.items():
+            if col in X.columns:
+                X[col] = (X[col] - mu) / std
+        return X
+
+    # ------------------------------------------------------------------
+    # PHẦN D: fit / transform / fit_transform
+    # ------------------------------------------------------------------
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> 'DataPipeline':
+        """
+        Học các tham số từ train set (không thay đổi dữ liệu).
+
+        Parameters
+        ----------
+        X : DataFrame features (sau khi đã chạy clean_data.py)
+        y : Series target (SalePrice). Truyền vào nếu muốn winsorize target.
+        """
+        print("=== DataPipeline.fit() ===")
+
+        # Bước A
+        if self.outlier_method:
+            print(f"  [Outlier] Học tham số outlier (method='{self.outlier_method}')...")
+            self._fit_outlier(X, y)
+
+        # Bước B
+        print("  [Encoding] Phân loại cột categorical...")
+        self._fit_encoding(X)
+        print(f"    Ordinal ({len(self._ordinal_cols_)} cột): {self._ordinal_cols_[:5]}{'...' if len(self._ordinal_cols_)>5 else ''}")
+        print(f"    One-hot ({len(self._onehot_cols_)} cột): {self._onehot_cols_[:5]}{'...' if len(self._onehot_cols_)>5 else ''}")
+
+        # Áp dụng ordinal trước để có dữ liệu sạch, rồi one-hot
+        X_temp = self._apply_ordinal(X)
+        self._fit_onehot(X_temp)
+
+        # Bước C: Scale — phải fit sau khi đã encode
+        if self.scale:
+            X_enc = self._apply_onehot(X_temp)
+            print(f"  [Scale] Học tham số z-score cho {X_enc.select_dtypes(include=[np.number]).shape[1]} cột số...")
+            self._fit_scale(X_enc)
+
+        self._fitted = True
+        print("  fit() hoàn tất.\n")
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Áp dụng pipeline lên tập dữ liệu mới (test/val).
+        Không xóa hàng (outlier sẽ được clip thay vì xóa).
+        """
+        if not self._fitted:
+            raise RuntimeError("Gọi fit() trước khi transform().")
+
+        X = self._transform_outlier_X(X)
+        X = self._apply_ordinal(X)
+        X = self._apply_onehot(X)
+        if self.scale:
+            X = self._apply_scale(X)
+
+        self._feature_names_ = X.columns.tolist()
+        return X
+
+    def fit_transform(self, X: pd.DataFrame, y: pd.Series | None = None):
+        """
+        Học tham số và áp dụng lên train set.
+        Nếu method='remove', trả về (X_transformed, y_cleaned).
+        Nếu không, trả về X_transformed (y không thay đổi).
+
+        Returns
+        -------
+        X_transformed : DataFrame
+        y_cleaned     : Series | None  — chỉ khác y gốc khi method='remove'
+        """
+        self.fit(X, y)
+
+        # Xử lý outlier cho train: remove thì xóa hàng, winsorize thì clip
+        if self.outlier_method == 'remove' and y is not None:
+            X, y = self._remove_outlier_rows(X, y)
+        elif self.outlier_method == 'winsorize':
+            X = self._transform_outlier_X(X)
+            if y is not None and '__target__' in self._winsor_limits:
+                lo, hi = self._winsor_limits['__target__']
+                n_clip = ((y < lo) | (y > hi)).sum()
+                y = y.clip(lower=lo, upper=hi)
+                if n_clip > 0:
+                    print(f"  [Outlier] Winsorize target: {n_clip} giá trị bị clip.")
+        else:
+            X = self._transform_outlier_X(X)
+
+        X = self._apply_ordinal(X)
+        X = self._apply_onehot(X)
+        if self.scale:
+            X = self._apply_scale(X)
+
+        self._feature_names_ = X.columns.tolist()
+        print(f"  Shape sau pipeline: {X.shape}")
+        return X, y
+
+    # ------------------------------------------------------------------
+    # PHẦN E: VIF — loại cột đa cộng tuyến
+    # ------------------------------------------------------------------
+    def drop_high_vif(
+        self,
+        X: pd.DataFrame,
+        threshold: float = 10.0,
+        max_iter: int = 20,
+    ) -> tuple[pd.DataFrame, list]:
+        """
+        Lặp loại bỏ cột có VIF cao nhất cho đến khi tất cả VIF <= threshold.
+
+        Returns
+        -------
+        X_reduced : DataFrame không còn cột đa cộng tuyến cao
+        dropped   : list tên cột đã bị loại
+        """
+        dropped = []
+        for iteration in range(max_iter):
+            vif_df = run_vif_check(X, threshold=threshold)
+            worst = vif_df.iloc[0]
+            if worst['VIF'] <= threshold or np.isinf(worst['VIF']) is False and worst['VIF'] <= threshold:
+                break
+            if worst['VIF'] == np.inf or worst['VIF'] > threshold:
+                print(f"  [VIF iter {iteration+1}] Loại '{worst['feature']}' (VIF={worst['VIF']})")
+                X = X.drop(columns=[worst['feature']])
+                dropped.append(worst['feature'])
+            else:
+                break
+        print(f"\n[VIF] Đã loại {len(dropped)} cột: {dropped}")
+        return X, dropped
+
+    # ------------------------------------------------------------------
+    # Thông tin pipeline
+    # ------------------------------------------------------------------
+    def summary(self):
+        """In tóm tắt pipeline sau khi fit."""
+        if not self._fitted:
+            print("Pipeline chưa được fit.")
+            return
+        print("=" * 55)
+        print("DataPipeline Summary")
+        print("=" * 55)
+        print(f"  Outlier method      : {self.outlier_method}")
+        if self.outlier_method == 'winsorize':
+            print(f"  Winsorize threshold : {self.outlier_threshold} (mỗi đuôi)")
+        elif self.outlier_method == 'remove':
+            print(f"  IQR factor          : {self.iqr_factor}")
+        print(f"  Encoding            : {self.encoding}")
+        print(f"  Ordinal cols        : {len(self._ordinal_cols_)}")
+        print(f"  One-hot cols        : {len(self._onehot_cols_)}")
+        print(f"  One-hot dummies     : {len(self._dummy_cols_)}")
+        print(f"  Scale (z-score)     : {self.scale}")
+        print(f"  Scale params learned: {len(self._scale_params)} cột")
+        print(f"  Feature names out   : {len(self._feature_names_)} cột")
+        print("=" * 55)
+
