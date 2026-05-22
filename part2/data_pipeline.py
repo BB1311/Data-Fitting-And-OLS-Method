@@ -54,6 +54,9 @@ nzv_cols = ['Utilities', 'Street']
 # MS SubClass: dtype int64 nhưng là MÃ LOẠI NHÀ, không có thứ tự số học -> convert sang string (categorical)
 df['MS SubClass'] = df['MS SubClass'].astype(str)
 
+# Mo Sold: dtype int64 nhưng mang tính mùa vụ (không có tính tuyến tính) -> convert sang string để One-hot
+df['Mo Sold'] = df['Mo Sold'].astype(str)
+
 # Các cột chỉ có ý nghĩa khi kết hợp với biến đã xóa, hoặc quá thưa thớt
 extra_drop = ['Pool Area', 'Misc Val']
 
@@ -703,6 +706,7 @@ ORDINAL_MAPS = {
 
     # Functional
     'Functional':     {'Sal':0,'Sev':1,'Maj2':2,'Maj1':3,'Mod':4,'Min2':5,'Min1':6,'Typ':7},
+
 }
 
 # Các cột danh nghĩa (không có thứ bậc) → One-hot encoding
@@ -713,7 +717,7 @@ NOMINAL_COLS = [
     'Foundation', 'Heating', 'Central Air',
     'Electrical', 'Garage Type',
     'Sale Type', 'Sale Condition',
-    'Land Contour',
+    'Land Contour','Mo Sold'
 ]
 
 
