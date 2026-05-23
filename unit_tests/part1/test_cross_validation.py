@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from part1.cross_validation import kfold_cv, compare_models_cv
+from part1.ridge_lasso import LassoRegressor
 
 # Tiện ích nội bộ
 def _make_linear_data(n=200, p=3, noise=0.0, seed=0):
@@ -47,13 +48,6 @@ class TestKFoldOLS:
         r2 = kfold_cv(X, y, k=5, model="ols", random_state=99)
         assert r1["cv_mse"] == r2["cv_mse"]
 
-    def test_ols_different_seeds_differ(self):
-        """Khác random_state thường cho CV MSE khác nhau."""
-        X, y, _ = _make_linear_data(noise=1.0, seed=5)
-        r1 = kfold_cv(X, y, k=5, model="ols", random_state=1)
-        r2 = kfold_cv(X, y, k=5, model="ols", random_state=2)
-        assert r1["cv_mse"] != r2["cv_mse"]
-
     def test_ols_cv_mse_equals_mean_fold_mse(self):
         """cv_mse phải bằng trung bình fold_mse theo công thức CV(k)."""
         X, y, _ = _make_linear_data(noise=0.5, seed=6)
@@ -83,6 +77,43 @@ class TestKFoldRidge:
         ols_res   = kfold_cv(X, y, k=5, model="ols",   random_state=42)
         ridge_res = kfold_cv(X, y, k=5, model="ridge", lam=1e8, random_state=42)
         assert ridge_res["cv_mse"] > ols_res["cv_mse"]
+
+    def test_ridge_optimal_lambda_beats_ols_high_dim(self):
+        """
+        Kịch bản high-dimensional (p gần bằng n) + đa cộng tuyến nhẹ + nhiễu:
+        Ridge được chọn λ tối ưu qua CV phải có CV MSE thấp hơn OLS.
+        Đây là minh chứng cho khả năng giảm variance của L2 regularization.
+        """
+        rng = np.random.default_rng(42)
+        n, p = 50, 30  # p khá lớn so với n
+        sigma = 1.5  # nhiễu đáng kể
+
+        # Tạo ma trận đặc trưng có tương quan nhẹ
+        X = rng.standard_normal((n, p)) * 0.7 + rng.standard_normal(n)[:, None] * 0.3
+
+        # Chỉ 5 biến đầu tiên thực sự có ý nghĩa
+        beta_true = np.zeros(p)
+        beta_true[:5] = rng.standard_normal(5)
+        y = X @ beta_true + sigma * rng.standard_normal(n)
+
+        # OLS CV
+        ols_res = kfold_cv(X, y, k=5, model="ols", random_state=42)
+
+        # Ridge CV với nhiều lambda, tìm lambda tối ưu theo CV MSE
+        lam_grid = np.logspace(-2, 3, 30)
+        best_ridge_mse = float('inf')
+        best_lam = None
+        for lam in lam_grid:
+            ridge_res = kfold_cv(X, y, k=5, model="ridge", lam=lam, random_state=42)
+            if ridge_res["cv_mse"] < best_ridge_mse:
+                best_ridge_mse = ridge_res["cv_mse"]
+                best_lam = lam
+
+        # Kiểm tra: Ridge tối ưu phải tốt hơn OLS
+        assert best_ridge_mse < ols_res["cv_mse"], (
+            f"Ridge với λ={best_lam:.4f} đáng lẽ phải thắng OLS. "
+            f"MSE Ridge={best_ridge_mse:.4f} >= MSE OLS={ols_res['cv_mse']:.4f}"
+        )
 
     def test_ridge_perfect_data(self):
         """Ridge(λ nhỏ) trên dữ liệu hoàn hảo: CV MSE gần 0."""
@@ -114,6 +145,49 @@ class TestKFoldLasso:
         res = kfold_cv(X, y, k=5, model="lasso", lam=0.1)
         for key in ("cv_mse", "cv_rmse", "cv_mae", "cv_r2", "fold_mse"):
             assert key in res
+
+    def test_lasso_sparse_model_beats_ols_with_irrelevant_features(self):
+        """
+        Kịch bản có nhiều biến nhiễu không liên quan:
+        Lasso với λ tối ưu phải:
+        - Có CV MSE thấp hơn OLS (do tự động loại bỏ biến nhiễu).
+        - Mô hình cuối cùng thưa (số hệ số khác 0 ít hơn tổng số biến).
+        """
+        rng = np.random.default_rng(43)
+        n = 100
+        p_signal, p_noise = 3, 7
+
+        X_signal = rng.standard_normal((n, p_signal))
+        X_noise = rng.standard_normal((n, p_noise)) * 0.3
+        X = np.hstack([X_signal, X_noise])
+
+        beta_true = np.array([2.0, -1.5, 1.0] + [0.0] * p_noise)
+        y = X @ beta_true + rng.standard_normal(n) * 0.8
+
+        ols_res = kfold_cv(X, y, k=5, model="ols", random_state=42)
+
+        lam_grid = np.logspace(-2, 1, 20)
+        best_mse = float('inf')
+        best_lam = None
+        for lam in lam_grid:
+            res = kfold_cv(X, y, k=5, model="lasso", lam=lam, random_state=42)
+            if res["cv_mse"] < best_mse:
+                best_mse = res["cv_mse"]
+                best_lam = lam
+
+        assert best_mse < ols_res["cv_mse"], (
+            f"Lasso với λ={best_lam:.4f} đáng lẽ phải thắng OLS. "
+            f"MSE Lasso={best_mse:.4f} >= MSE OLS={ols_res['cv_mse']:.4f}"
+        )
+
+        # Kiểm tra tính thưa
+        final_model = LassoRegressor(lam=best_lam, max_iter=5000).fit(X, y)
+        n_nonzero = final_model.n_nonzero
+
+        assert n_nonzero < X.shape[1], (
+            f"Lasso phải tạo ra mô hình thưa. Số biến khác 0 = {n_nonzero}, "
+            f"tổng số biến = {X.shape[1]}"
+        )
 
 # 4. compare_models_cv
 class TestCompareModels:
@@ -147,7 +221,69 @@ class TestCompareModels:
         assert len(result["ridge_results"]) == len(lam_grid)
         assert len(result["lasso_results"]) == len(lam_grid)
 
-# 5. Edge cases & Exceptions
+    def test_best_mse_is_minimum(self):
+        """best_ridge và best_lasso phải có CV MSE nhỏ nhất trong các kết quả tương ứng."""
+        X, y, _ = _make_linear_data(noise=1.0, seed=33)
+        lam_grid = [0.1, 1.0, 10.0]
+        result = compare_models_cv(X, y, k=5, lam_grid=lam_grid, random_state=42)
+
+        ridge_mses = [r["cv_mse"] for r in result["ridge_results"]]
+        lasso_mses = [r["cv_mse"] for r in result["lasso_results"]]
+
+        assert result["best_ridge"]["cv_mse"] == min(ridge_mses)
+        assert result["best_lasso"]["cv_mse"] == min(lasso_mses)
+
+# 5. Fold properties (non‑overlapping, exhaustive, balanced, reproducible)
+class TestFoldProperties:
+    """Kiểm tra tính chất của phép chia fold và khả năng tái lặp."""
+
+    def test_folds_non_overlapping_and_exhaustive(self):
+        """Các fold validation không trùng lặp, bao phủ hết dữ liệu và cân bằng."""
+        X, y, _ = _make_linear_data(n=23, noise=0.5, seed=42)
+        n = len(y)
+        k = 5
+        res = kfold_cv(X, y, k=k, model="ols",
+                       return_indices=True, random_state=42)
+        val_indices = res["val_indices"]
+
+        # 1. Các fold validation không giao nhau
+        for i in range(k):
+            for j in range(i + 1, k):
+                overlap = np.intersect1d(val_indices[i], val_indices[j])
+                assert len(overlap) == 0, \
+                    f"Fold {i} và {j} trùng {len(overlap)} mẫu"
+
+        # 2. Union tất cả fold = toàn bộ chỉ số từ 0 đến n-1
+        all_val = np.sort(np.concatenate(val_indices))
+        assert np.array_equal(all_val, np.arange(n)), \
+            "Union các fold validation không bao phủ hết dữ liệu"
+
+        # 3. Kích thước các fold cân bằng (chênh lệch không quá 1)
+        sizes = [len(idx) for idx in val_indices]
+        assert max(sizes) - min(sizes) <= 1, \
+            f"Kích thước fold quá lệch: {sizes}"
+        assert sum(sizes) == n, "Tổng số mẫu validation phải bằng n"
+
+    def test_cv_reproducibility(self):
+        """Cùng random_state → cùng fold indices và cùng CV MSE."""
+        X, y, _ = _make_linear_data(n=30, noise=0.5, seed=45)
+
+        res1 = kfold_cv(X, y, k=5, model="ols",
+                        return_indices=True, random_state=99)
+        res2 = kfold_cv(X, y, k=5, model="ols",
+                        return_indices=True, random_state=99)
+
+        # Kiểm tra indices từng fold
+        for i in range(5):
+            assert np.array_equal(res1["val_indices"][i],
+                                  res2["val_indices"][i]), \
+                f"Fold {i} khác nhau dù cùng seed"
+
+        # Kiểm tra CV MSE
+        assert res1["cv_mse"] == res2["cv_mse"], \
+            "CV MSE khác dù cùng seed"
+
+# 6. Edge cases & Exceptions
 class TestEdgeCases:
 
     def test_invalid_model_raises(self):

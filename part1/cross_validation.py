@@ -1,6 +1,6 @@
 import numpy as np
-from ols_implementation import OLSRegressor
-from ridge_lasso import RidgeRegressor, LassoRegressor
+from part1.ols_implementation import OLSRegressor, compute_rss, compute_tss, compute_r2
+from part1.ridge_lasso import RidgeRegressor, LassoRegressor
 
 # HÀM TIỆN ÍCH
 def _mse(y_true, y_pred):
@@ -12,11 +12,6 @@ def _rmse(y_true, y_pred):
 def _mae(y_true, y_pred):
     return float(np.mean(np.abs(y_true - y_pred)))
 
-def _r2(y_true, y_pred):
-    ss_res = np.sum((y_true - y_pred) ** 2)
-    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-    return float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
-
 # HÀM CHÍNH: k-FOLD CROSS-VALIDATION
 def kfold_cv(
     X: np.ndarray,
@@ -25,6 +20,7 @@ def kfold_cv(
     model: str = "ols",
     lam: float = 1.0,
     random_state: int = 42,
+    return_indices: bool = False,
 ) -> dict:
     """
     k-Fold Cross-Validation từ scratch.
@@ -50,11 +46,15 @@ def kfold_cv(
     -------
     dict:
         cv_mse   : float — CV(k) chính theo công thức đề bài
-        cv_rmse  : float — trung bình RMSE qua k fold
+        cv_rmse  : float — căn bậc hai của cv_mse (RMSE tổng thể)
         cv_mae   : float — trung bình MAE qua k fold
         cv_r2    : float — trung bình R² qua k fold
-        fold_mse : list  — MSE từng fold (để kiểm tra variance)
-        fold_r2  : list  — R² từng fold
+        std_fold_mse  : float — độ lệch chuẩn của MSE giữa các fold (ddof=1)
+        std_fold_rmse : float — độ lệch chuẩn của RMSE giữa các fold (ddof=1)
+        std_fold_mae  : float — độ lệch chuẩn của MAE giữa các fold
+        std_fold_r2   : float — độ lệch chuẩn của R² giữa các fold
+        se_cv_mse     : float — sai số chuẩn của CV MSE (= std_mse / sqrt(k))
+        fold_mse, fold_rmse, fold_mae, fold_r2: list — giá trị từng fold
         k, model, lam
     """
     assert model in ("ols", "ridge", "lasso"), \
@@ -77,8 +77,10 @@ def kfold_cv(
 
     fold_mse, fold_rmse, fold_mae, fold_r2 = [], [], [], []
 
+    val_indices_list = []
     for i in range(k):
         val_idx   = indices[boundaries[i] : boundaries[i + 1]]
+        val_indices_list.append(val_idx)
         train_idx = np.concatenate([indices[: boundaries[i]],
                                     indices[boundaries[i + 1] :]])
 
@@ -98,20 +100,49 @@ def kfold_cv(
         fold_mse.append(_mse(y_val, y_pred))
         fold_rmse.append(_rmse(y_val, y_pred))
         fold_mae.append(_mae(y_val, y_pred))
-        fold_r2.append(_r2(y_val, y_pred))
+        if len(y_val) < 2:
+            r2 = np.nan  # không xác định được R² cho 1 điểm
+        else:
+            r2 = compute_r2(y_val, y_pred)
+        fold_r2.append(r2)
 
-    return {
-        "cv_mse"  : float(np.mean(fold_mse)),
-        "cv_rmse" : float(np.mean(fold_rmse)),
-        "cv_mae"  : float(np.mean(fold_mae)),
-        "cv_r2"   : float(np.mean(fold_r2)),
-        "fold_mse": fold_mse,
-        "fold_r2" : fold_r2,
-        "k"       : k,
-        "model"   : model,
-        "lam"     : lam,
+    # Tính trung bình và độ lệch chuẩn
+    cv_mse = float(np.mean(fold_mse))
+    cv_rmse = float(np.sqrt(cv_mse))
+    cv_mae = float(np.mean(fold_mae))
+    if np.all(np.isnan(fold_r2)):
+        cv_r2 = np.nan
+    else:
+        cv_r2 = float(np.nanmean(fold_r2))
+
+    std_mse = float(np.std(fold_mse, ddof=1))
+    std_rmse = float(np.std(fold_rmse, ddof=1))
+    std_mae = float(np.std(fold_mae, ddof=1))
+    std_r2 = float(np.std(fold_r2, ddof=1))
+
+    se_cv_mse = std_mse / np.sqrt(k)  # standard error của CV MSE
+
+    result = {
+         "cv_mse"       : cv_mse,
+        "cv_rmse"      : cv_rmse,
+        "cv_mae"       : cv_mae,
+        "cv_r2"        : cv_r2,
+        "std_fold_mse" : std_mse,
+        "std_fold_rmse": std_rmse,
+        "std_fold_mae" : std_mae,
+        "std_fold_r2"  : std_r2,
+        "se_cv_mse"    : se_cv_mse,
+        "fold_mse"     : fold_mse,
+        "fold_rmse"    : fold_rmse,
+        "fold_mae"     : fold_mae,
+        "fold_r2"      : fold_r2,
+        "k"            : k,
+        "model"        : model,
+        "lam"          : lam,
     }
-
+    if return_indices:
+        result["val_indices"] = val_indices_list
+    return result
 
 def compare_models_cv(
     X: np.ndarray,
