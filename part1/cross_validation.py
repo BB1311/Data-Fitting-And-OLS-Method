@@ -1,5 +1,5 @@
 import numpy as np
-from part1.ols_implementation import OLSRegressor, compute_rss, compute_tss, compute_r2
+from part1.ols_implementation import OLSRegressor, compute_r2
 from part1.ridge_lasso import RidgeRegressor, LassoRegressor
 
 # HÀM TIỆN ÍCH
