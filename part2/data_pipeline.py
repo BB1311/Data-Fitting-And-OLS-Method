@@ -822,6 +822,11 @@ class DataPipeline:
         encoding: str = 'auto',
         scale: bool = True,
         drop_first: bool = True,
+        # --- CÁC THAM SỐ MỚI THÊM VÀO ---
+        log_target: bool = True,              
+        engineer_features: bool = True,       
+        log_skewed_features: bool = True,     
+        add_interactions: bool = True,        
     ):
         self.outlier_method    = outlier_method
         self.outlier_threshold = outlier_threshold
@@ -830,16 +835,63 @@ class DataPipeline:
         self.encoding          = encoding
         self.scale             = scale
         self.drop_first        = drop_first
+        
+        self.log_target          = log_target
+        self.engineer_features   = engineer_features
+        self.log_skewed_features = log_skewed_features
+        self.add_interactions    = add_interactions
 
-        # Học từ train set
-        self._winsor_limits: dict  = {}   # {col: (lower, upper)}
-        self._iqr_bounds: dict     = {}   # {col: (lower_bound, upper_bound)}
-        self._scale_params: dict   = {}   # {col: (mean, std)}
-        self._onehot_cols_: list   = []   # cột được one-hot
-        self._ordinal_cols_: list  = []   # cột được ordinal
-        self._dummy_cols_: list    = []   # tên cột sau khi get_dummies
-        self._feature_names_: list = []   # tên features cuối cùng
+        # --- CÁC BIẾN LƯU TRỮ MỚI THÊM VÀO ---
+        self._winsor_limits: dict  = {}   
+        self._iqr_bounds: dict     = {}   
+        self._scale_params: dict   = {}   
+        self._ordinal_medians: dict = {}      # Lưu median để tránh leakage
+        self._skewed_cols_to_log: list = []   # Lưu cột cần log
+        self._onehot_cols_: list   = []   
+        self._ordinal_cols_: list  = []   
+        self._dummy_cols_: list    = []   
+        self._feature_names_: list = []   
         self._fitted = False
+
+
+    # ------------------------------------------------------------------
+    # PHẦN MỚI: FEATURE ENGINEERING & NON-LINEAR TRANSFORMS
+    # ------------------------------------------------------------------
+    def _create_new_features(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Tạo các biến tổng hợp (Những biến chưa tạo ở bước Clean Data)"""
+        if not self.engineer_features: return X
+        X = X.copy()
+        if 'Gr Liv Area' in X.columns and 'Total Bsmt SF' in X.columns:
+            X['Total_SqFt'] = X['Gr Liv Area'] + X['Total Bsmt SF']
+        return X
+
+    def _create_interactions(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Tạo các biến tương tác thủ công (Tránh bùng nổ chiều dữ liệu)"""
+        if not self.add_interactions: return X
+        X = X.copy()
+        if 'Overall Qual' in X.columns and 'Gr Liv Area' in X.columns:
+            X['Qual_x_GrLivArea'] = X['Overall Qual'] * X['Gr Liv Area']
+        return X
+
+    def _fit_log_features(self, X: pd.DataFrame):
+        """Quét tìm các cột số bị lệch (skew > 0.75) trên tập Train"""
+        if not self.log_skewed_features: return
+        num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+        valid_cols = [c for c in num_cols if X[c].min() >= 0] # Chỉ lấy cột không âm
+        skewness = X[valid_cols].skew()
+        
+        self._skewed_cols_to_log = skewness[skewness > 0.75].index.tolist()
+        self._skewed_cols_to_log = [c for c in self._skewed_cols_to_log if c not in self._ordinal_cols_]
+
+    def _apply_log_features(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Ép hàm log1p lên các cột đã phát hiện"""
+        if not self.log_skewed_features: return X
+        X = X.copy()
+        for col in self._skewed_cols_to_log:
+            if col in X.columns:
+                X[col] = np.log1p(X[col])
+        return X
+    
 
     # ------------------------------------------------------------------
     # PHẦN A: Outlier
@@ -920,22 +972,25 @@ class DataPipeline:
             self._ordinal_cols_ = [c for c in ORDINAL_MAPS if c in cat_cols]
             remaining = [c for c in cat_cols if c not in self._ordinal_cols_]
             self._onehot_cols_ = [c for c in NOMINAL_COLS if c in remaining]
-            # Cột categorical còn lại chưa được phân loại → one-hot luôn
             uncategorized = [c for c in remaining if c not in self._onehot_cols_]
             if uncategorized:
-                print(f"  [Encoding] {len(uncategorized)} cột categorical chưa được phân loại "
-                      f"→ tự động one-hot: {uncategorized}")
+                print(f"  [Encoding] {len(uncategorized)} cột tự động one-hot: {uncategorized}")
                 self._onehot_cols_ += uncategorized
 
         elif self.encoding == 'onehot_only':
             self._ordinal_cols_ = []
             self._onehot_cols_ = cat_cols
-
         elif self.encoding == 'ordinal_only':
             self._ordinal_cols_ = cat_cols
             self._onehot_cols_ = []
         else:
             raise ValueError(f"encoding phải là 'auto', 'onehot_only', hoặc 'ordinal_only'.")
+
+        # --- FIX LEAKAGE: Lưu median của tập Train ---
+        for col in self._ordinal_cols_:
+            if col in X.columns and col in ORDINAL_MAPS:
+                mapped = X[col].map(ORDINAL_MAPS[col])
+                self._ordinal_medians[col] = mapped.median()
 
     def _apply_ordinal(self, X: pd.DataFrame) -> pd.DataFrame:
         X = X.copy()
@@ -944,17 +999,11 @@ class DataPipeline:
                 continue
             if col in ORDINAL_MAPS:
                 X[col] = X[col].map(ORDINAL_MAPS[col])
-                # Giá trị không tìm thấy trong map → -1 (cần kiểm tra)
                 if X[col].isna().any():
-                    missing_vals = set(X[col][X[col].isna()].index)
-                    warnings.warn(
-                        f"[Ordinal] Cột '{col}': {X[col].isna().sum()} giá trị "
-                        f"không nằm trong map → điền median.",
-                        UserWarning
-                    )
-                    X[col] = X[col].fillna(X[col].median())
+                    # --- FIX LEAKAGE: Lấy median đã học từ Train ra xài ---
+                    med_val = self._ordinal_medians.get(col, 0)
+                    X[col] = X[col].fillna(med_val)
             else:
-                # ordinal_only mode: dùng rank/category codes
                 X[col] = pd.Categorical(X[col]).codes
         return X
 
@@ -1002,35 +1051,28 @@ class DataPipeline:
     # PHẦN D: fit / transform / fit_transform
     # ------------------------------------------------------------------
     def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> 'DataPipeline':
-        """
-        Học các tham số từ train set (không thay đổi dữ liệu).
-
-        Parameters
-        ----------
-        X : DataFrame features (sau khi đã chạy clean_data.py)
-        y : Series target (SalePrice). Truyền vào nếu muốn winsorize target.
-        """
         print("=== DataPipeline.fit() ===")
+        # Log target
+        _y = np.log1p(y) if (self.log_target and y is not None) else y
 
-        # Bước A
+        X_temp = self._create_new_features(X)
+        
         if self.outlier_method:
             print(f"  [Outlier] Học tham số outlier (method='{self.outlier_method}')...")
-            self._fit_outlier(X, y)
+            self._fit_outlier(X_temp, _y)
 
-        # Bước B
         print("  [Encoding] Phân loại cột categorical...")
-        self._fit_encoding(X)
-        print(f"    Ordinal ({len(self._ordinal_cols_)} cột): {self._ordinal_cols_[:5]}{'...' if len(self._ordinal_cols_)>5 else ''}")
-        print(f"    One-hot ({len(self._onehot_cols_)} cột): {self._onehot_cols_[:5]}{'...' if len(self._onehot_cols_)>5 else ''}")
+        self._fit_encoding(X_temp)
+        X_temp = self._apply_ordinal(X_temp)
+        
+        X_temp = self._create_interactions(X_temp)
+        self._fit_log_features(X_temp)
+        X_temp = self._apply_log_features(X_temp)
 
-        # Áp dụng ordinal trước để có dữ liệu sạch, rồi one-hot
-        X_temp = self._apply_ordinal(X)
         self._fit_onehot(X_temp)
-
-        # Bước C: Scale — phải fit sau khi đã encode
         if self.scale:
             X_enc = self._apply_onehot(X_temp)
-            print(f"  [Scale] Học tham số z-score cho {X_enc.select_dtypes(include=[np.number]).shape[1]} cột số...")
+            print(f"  [Scale] Học tham số z-score...")
             self._fit_scale(X_enc)
 
         self._fitted = True
@@ -1038,15 +1080,13 @@ class DataPipeline:
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        """
-        Áp dụng pipeline lên tập dữ liệu mới (test/val).
-        Không xóa hàng (outlier sẽ được clip thay vì xóa).
-        """
-        if not self._fitted:
-            raise RuntimeError("Gọi fit() trước khi transform().")
-
+        if not self._fitted: raise RuntimeError("Gọi fit() trước khi transform().")
+        
+        X = self._create_new_features(X)
         X = self._transform_outlier_X(X)
         X = self._apply_ordinal(X)
+        X = self._create_interactions(X)
+        X = self._apply_log_features(X)
         X = self._apply_onehot(X)
         if self.scale:
             X = self._apply_scale(X)
@@ -1055,41 +1095,35 @@ class DataPipeline:
         return X
 
     def fit_transform(self, X: pd.DataFrame, y: pd.Series | None = None):
-        """
-        Học tham số và áp dụng lên train set.
-        Nếu method='remove', trả về (X_transformed, y_cleaned).
-        Nếu không, trả về X_transformed (y không thay đổi).
-
-        Returns
-        -------
-        X_transformed : DataFrame
-        y_cleaned     : Series | None  — chỉ khác y gốc khi method='remove'
-        """
+        if self.log_target and y is not None:
+            print("  [Target] Áp dụng np.log1p(y)")
+            y = np.log1p(y)
+            
         self.fit(X, y)
 
-        # Xử lý outlier cho train: remove thì xóa hàng, winsorize thì clip
+        X = self._create_new_features(X)
+        
         if self.outlier_method == 'remove' and y is not None:
             X, y = self._remove_outlier_rows(X, y)
         elif self.outlier_method == 'winsorize':
             X = self._transform_outlier_X(X)
             if y is not None and '__target__' in self._winsor_limits:
                 lo, hi = self._winsor_limits['__target__']
-                n_clip = ((y < lo) | (y > hi)).sum()
                 y = y.clip(lower=lo, upper=hi)
-                if n_clip > 0:
-                    print(f"  [Outlier] Winsorize target: {n_clip} giá trị bị clip.")
         else:
             X = self._transform_outlier_X(X)
 
         X = self._apply_ordinal(X)
+        X = self._create_interactions(X)
+        X = self._apply_log_features(X)
         X = self._apply_onehot(X)
+        
         if self.scale:
             X = self._apply_scale(X)
 
         self._feature_names_ = X.columns.tolist()
         print(f"  Shape sau pipeline: {X.shape}")
         return X, y
-
     # ------------------------------------------------------------------
     # PHẦN E: VIF — loại cột đa cộng tuyến
     # ------------------------------------------------------------------
