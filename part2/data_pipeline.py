@@ -625,7 +625,6 @@ else:
         f"Kiểm tra lại logic từng cột trước khi thêm xử lý."
     )
 
-
 """
 data_pipeline.py
 ================
@@ -1180,4 +1179,5 @@ class DataPipeline:
         print(f"  Scale params learned: {len(self._scale_params)} cột")
         print(f"  Feature names out   : {len(self._feature_names_)} cột")
         print("=" * 55)
+
 

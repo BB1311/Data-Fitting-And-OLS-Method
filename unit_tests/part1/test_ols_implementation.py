@@ -1,4 +1,5 @@
 import numpy as np
+from scipy import stats
 import pytest
 
 from part1.ols_implementation import (
@@ -11,6 +12,9 @@ from part1.ols_implementation import (
     compute_r2_adj,
     model_metrics,
     verify_with_sklearn,
+    hat_matrix,
+    coef_inference,
+    vif,
 )
 
 
@@ -236,3 +240,210 @@ def test_r2_adj_penalizes_extra_variables():
 
     # Lúc này R² thông thường đứng im, nhưng do p tăng (từ 1 lên 2) nên R²_adj BẮT BUỘC giảm
     assert r2_adj_noise < r2_adj_base, f"FAIL: R²_adj không giảm! Base={r2_adj_base:.4f}, Noise={r2_adj_noise:.4f}"
+
+
+# ============================================================
+# Kiểm thử hàm hat_matrix
+# ============================================================
+
+def test_hat_matrix_properties():
+    """Test 1: Kiểm tra các tính chất toán học cốt lõi của Hat Matrix (kích thước, đối xứng, trace)."""
+    X = np.array([
+        [1.0, 2.1],
+        [3.0, 4.5],
+        [5.0, 6.2],
+        [7.0, 8.9]
+    ])
+    
+    H, is_idemp = hat_matrix(X, add_intercept=True)
+    
+    # 1. Kích thước của H phải là n x n (4 x 4)
+    assert H.shape == (4, 4), f"FAIL: Kích thước kỳ vọng (4, 4), nhưng nhận được {H.shape}"
+    
+    # 2. Hàm phải xác nhận H là ma trận lũy đẳng (H^2 = H)
+    assert is_idemp is True, "FAIL: Hàm báo cáo ma trận không lũy đẳng."
+    
+    # 3. Tính đối xứng: H = H^T
+    _assert_close(H, H.T, msg="H phải là ma trận đối xứng")
+    
+    # 4. Tính chất Trace: Vết của ma trận chiếu H phải bằng hạng (rank) của X_design
+    # X có 2 cột + 1 cột intercept = 3. Vậy Trace(H) = 3
+    _assert_close(np.trace(H), 3.0, msg="Trace(H) phải bằng p + 1")
+
+
+def test_hat_matrix_no_intercept():
+    """Test 2: Kiểm tra khi tham số add_intercept = False."""
+    # X có n=3, p=1
+    X = np.array([[1.0], [2.0], [3.0]])
+    
+    H, is_idemp = hat_matrix(X, add_intercept=False)
+    
+    assert H.shape == (3, 3), "FAIL: Kích thước phải là (3, 3)"
+    assert is_idemp is True, "FAIL: Ma trận vẫn phải lũy đẳng"
+    
+    # Vì không có intercept, số tham số mô hình k = p = 1. Trace(H) = 1
+    _assert_close(np.trace(H), 1.0, msg="Trace(H) phải bằng 1 khi không có intercept")
+
+
+def test_hat_matrix_raises_on_singular():
+    """Test 3: Xử lý ngoại lệ khi ma trận (X^T X) không khả nghịch."""
+    # Tạo ma trận có 2 cột giống hệt nhau (đa cộng tuyến hoàn hảo)
+    col = np.array([1.0, 2.0, 3.0, 4.0])
+    X_collinear = np.column_stack([col, col])
+    
+    # Phải bắt đúng ValueError với thông điệp liên quan đến ma trận suy biến/đa cộng tuyến
+    with pytest.raises(ValueError, match="khả nghịch|suy biến|đa cộng tuyến"):
+        hat_matrix(X_collinear, add_intercept=True)
+
+
+# ============================================================
+# Kiểm thử hàm coef_inference (Suy diễn thống kê)
+# ============================================================
+
+def test_coef_inference_correctness():
+    """Test 1: Kiểm tra tính toán SE, t-stat, p-value với kết quả tính tay."""
+    # Xây dựng bộ dữ liệu nhỏ có n=3, p=1
+    # Mô hình: y = beta_0 + beta_1 * X + e
+    X = np.array([[1.0], [2.0], [3.0]])
+    y = np.array([2.0, 4.0, 5.0])
+    
+    # Nghiệm được giải chính xác bằng toán học phân số:
+    beta_hat_expected = np.array([2/3, 1.5])   # intercept = 0.666..., slope = 1.5
+    sigma2_expected = 1/6                      # Phương sai nhiễu RSS/df = (1/6) / 1
+    
+    # Chạy hàm
+    res = coef_inference(X, y, beta_hat_expected, sigma2_expected, verbose=False)
+    
+    # 1. Kiểm tra Standard Errors (SE)
+    # Công thức: SE = sqrt(sigma2 * diag((X^T X)^-1))
+    # (X^T X)^-1 của bài này là ma trận (1/6) * [[14, -6], [-6, 3]]
+    se_expected = [np.sqrt((1/6) * (14/6)), np.sqrt((1/6) * (3/6))]
+    _assert_close(res["se"], se_expected, msg="Sai số chuẩn (SE) tính sai")
+    
+    # 2. Kiểm tra t-statistics
+    t_expected = [beta_hat_expected[0] / se_expected[0], beta_hat_expected[1] / se_expected[1]]
+    _assert_close(res["t_stats"], t_expected, msg="t-statistics tính sai")
+    
+    # 3. Kiểm tra p-values và Khoảng tin cậy (với df = n - k = 3 - 2 = 1)
+    p_expected = 2 * (1.0 - stats.t.cdf(np.abs(t_expected), df=1))
+    _assert_close(res["p_values"], p_expected, msg="p-values tính sai")
+    
+    t_crit = stats.t.ppf(0.975, df=1)
+    ci_lower_expected = beta_hat_expected - t_crit * np.array(se_expected)
+    _assert_close(res["ci_lower"], ci_lower_expected, msg="Cận dưới CI 95% sai")
+
+
+def test_coef_inference_exceptions():
+    """Test 2: Kiểm tra exceptions của hàm."""
+    X = np.array([[1.0], [2.0]])
+    y = np.array([1.0, 2.0])
+    sigma2 = 1.0
+    
+    # Lỗi 1: Truyền vector beta_hat bị lệch kích thước so với số cột của X
+    # X có 1 cột. Chèn intercept thành 2. Nhưng beta_hat lại có 3 phần tử.
+    with pytest.raises(ValueError, match="kích thước|khớp"):
+        coef_inference(X, y, np.array([1.0, 2.0, 3.0]), sigma2, verbose=False)
+        
+    # Lỗi 2: Không đủ bậc tự do (n=2, k=2 -> df=0)
+    # X (1 cột) + intercept = 2 tham số. Mẫu có 2 điểm dữ liệu -> df = 0
+    with pytest.raises(ValueError, match="bậc tự do"):
+        coef_inference(X, y, np.array([1.0, 2.0]), sigma2, verbose=False)
+        
+    # Lỗi 3: Ma trận suy biến (Đa cộng tuyến hoàn hảo)
+    # n=4, có 2 cột giống hệt nhau
+    X_collinear = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0], [4.0, 4.0]])
+    y_collinear = np.array([1, 2, 3, 4])
+    beta_dummy = np.array([1.0, 2.0, 3.0])
+    with pytest.raises(ValueError, match="suy biến"):
+        coef_inference(X_collinear, y_collinear, beta_dummy, sigma2, verbose=False)
+
+
+def test_coef_inference_intercept_label():
+    """
+    Kiểm tra nhãn "Intercept" được nhận diện đúng trong cả hai trường hợp:
+    a) Gọi với X gốc (hàm tự thêm cột 1)
+    b) Gọi với X_design (đã có cột 1) — tương đương gọi qua summary()
+ 
+    Cả hai phải tính SE như nhau (kết quả số học giống hệt).
+    """
+    X        = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+    y        = np.array([2.1, 3.9, 6.1, 7.9, 10.1])
+    model    = OLSRegressor(fit_intercept=True).fit(X, y)
+ 
+    # Gọi với X gốc
+    res_raw  = coef_inference(X, y, model.beta_hat, model.sigma2_hat, verbose=False)
+    # Gọi với X_design (giống summary())
+    res_des  = coef_inference(model._X_design, y, model.beta_hat, model.sigma2_hat, verbose=False)
+ 
+    # Kết quả số học phải giống hệt nhau
+    _assert_close(res_raw["se"],       res_des["se"],       msg="SE nhất quán")
+    _assert_close(res_raw["t_stats"],  res_des["t_stats"],  msg="t-stat nhất quán")
+    _assert_close(res_raw["p_values"], res_des["p_values"], msg="p-value nhất quán")
+
+
+# ============================================================
+# Kiểm thử hàm vif (Variance Inflation Factor)
+# ============================================================
+
+def test_vif_orthogonal_data():
+    """Test 1: Dữ liệu trực giao.
+    Khi các cột hoàn toàn độc lập với nhau, R^2 của hồi quy chéo sẽ bằng 0.
+    Dẫn đến VIF = 1 / (1 - 0) = 1.0 cho tất cả các biến.
+    """
+    # Xây dựng ma trận với 2 cột trực giao (tích vô hướng = 0)
+    X_ortho = np.array([
+        [ 1.0,  1.0],
+        [ 1.0, -1.0],
+        [-1.0,  1.0],
+        [-1.0, -1.0]
+    ])
+    
+    vif_scores = vif(X_ortho, verbose=False)
+    
+    # Kích thước phải bằng số lượng đặc trưng (p=2)
+    assert len(vif_scores) == 2, "FAIL: Vector VIF phải có kích thước bằng số cột của X."
+    
+    # Giá trị VIF phải bằng 1.0
+    _assert_close(vif_scores, [1.0, 1.0], msg="VIF của dữ liệu trực giao phải chính xác bằng 1.0")
+
+
+def test_vif_perfect_collinearity():
+    """Test 2: Đa cộng tuyến hoàn hảo.
+    Nếu một biến là tổ hợp tuyến tính của các biến khác (R^2 = 1), 
+    VIF phải trả về vô cực (np.inf) để tránh lỗi ZeroDivisionError.
+    """
+    x1 = np.array([1.0, 2.0, 3.0, 4.0])
+    x2 = np.array([5.0, 1.0, 0.0, 2.0])
+    
+    # x3 phụ thuộc tuyến tính hoàn toàn vào x1 và x2
+    x3 = 2.0 * x1 - 0.5 * x2 
+    
+    X_collinear = np.column_stack([x1, x2, x3])
+    
+    vif_scores = vif(X_collinear, verbose=False)
+    
+    # Tất cả các biến đều nằm trong mối quan hệ tuyến tính này nên VIF của cả 3 đều phải là vô cực
+    assert np.isinf(vif_scores[0]), "FAIL: VIF của X1 phải là vô cực (inf)"
+    assert np.isinf(vif_scores[1]), "FAIL: VIF của X2 phải là vô cực (inf)"
+    assert np.isinf(vif_scores[2]), "FAIL: VIF của X3 phải là vô cực (inf)"
+
+
+def test_vif_high_collinearity():
+    """Test 3: Đa cộng tuyến cao.
+    Kiểm tra xem hệ thống có nhận diện đúng các biến có VIF > 10 không.
+    """
+    x1 = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    x2 = np.array([5.0, -1.0, 3.0, 8.0, 0.0])      # Độc lập hoàn toàn
+    x3 = np.array([2.01, 4.02, 5.99, 8.05, 9.98])  # x3 gần như bằng 2*x1
+    
+    X = np.column_stack([x1, x2, x3])
+    
+    # Tính VIF
+    vif_scores = vif(X, verbose=False)
+    
+    # x1 và x3 có quan hệ mật thiết -> VIF phải rất lớn (> 10)
+    assert vif_scores[0] > 10.0, f"FAIL: VIF của x1 ({vif_scores[0]:.2f}) phải > 10 do đa cộng tuyến"
+    assert vif_scores[2] > 10.0, f"FAIL: VIF của x3 ({vif_scores[2]:.2f}) phải > 10 do đa cộng tuyến"
+    
+    # x2 độc lập -> VIF phải rất nhỏ (xấp xỉ 1)
+    assert vif_scores[1] < 2.0, f"FAIL: VIF của x2 ({vif_scores[1]:.2f}) phải nhỏ, vì nó độc lập"
