@@ -41,6 +41,31 @@ Usage
     X_train_no_mc, dropped = pipe.drop_high_vif(X_train_clean, threshold=10)
 """
 
+
+# ======================================================================
+# HÀM CẦU NỐI: VIF CHECK
+# ======================================================================
+def run_vif_check(X: pd.DataFrame, threshold: float = 10.0) -> pd.DataFrame:
+    """
+    Cầu nối: Chuyển DataFrame thành Numpy array để đưa vào hàm vif (Part 1), 
+    sau đó trả về DataFrame chứa tên cột và điểm VIF tương ứng, sắp xếp giảm dần.
+    """
+    # 1. Chuyển DataFrame sang Numpy array
+    X_array = X.values
+    
+    # 2. Gọi hàm vif từ Part 1
+    vif_scores = vif(X_array, verbose=False)
+    
+    # 3. Tạo DataFrame kết quả kết hợp giữa Tên cột và Điểm VIF
+    vif_df = pd.DataFrame({
+        'feature': X.columns,
+        'VIF': vif_scores
+    })
+    
+    # 4. Sắp xếp giảm dần theo VIF để df.iloc[0] luôn là cột có VIF cao nhất
+    vif_df = vif_df.sort_values(by='VIF', ascending=False).reset_index(drop=True)
+    
+    return vif_df
 # ══════════════════════════════════════════════════════════════════════
 # 0. MAPPING ORDINAL — tùy chỉnh theo Ames Housing Data Dictionary
 # ══════════════════════════════════════════════════════════════════════
@@ -486,28 +511,7 @@ class DataPipeline:
     # ------------------------------------------------------------------
     # PHẦN F: VIF — loại cột đa cộng tuyến
     # ------------------------------------------------------------------
-    def run_vif_check(X: pd.DataFrame, threshold: float = 10.0) -> pd.DataFrame:
-        """
-        Cầu nối: Chuyển DataFrame thành Numpy array để đưa vào hàm vif (Part 1), 
-        sau đó trả về DataFrame chứa tên cột và điểm VIF tương ứng, sắp xếp giảm dần.
-        """
-        # 1. Chuyển DataFrame sang Numpy array
-        X_array = X.values
-        
-        # 2. Gọi hàm vif từ Part 1. 
-        # Lưu ý: Set verbose=False để tránh in ra bảng VIF quá nhiều lần trong vòng lặp while.
-        vif_scores = vif(X_array, verbose=False)
-        
-        # 3. Tạo DataFrame kết quả kết hợp giữa Tên cột và Điểm VIF
-        vif_df = pd.DataFrame({
-            'feature': X.columns,
-            'VIF': vif_scores
-        })
-        
-        # 4. Sắp xếp giảm dần theo VIF để df.iloc[0] luôn là cột có VIF cao nhất
-        vif_df = vif_df.sort_values(by='VIF', ascending=False).reset_index(drop=True)
-        
-        return vif_df
+
     def drop_high_vif(
         self,
         X: pd.DataFrame,
