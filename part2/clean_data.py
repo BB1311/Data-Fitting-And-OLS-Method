@@ -21,7 +21,9 @@ import numpy as np
 # ══════════════════════════════════════════════════════════════════════
 # BƯỚC 0: ĐỌC DỮ LIỆU
 # ══════════════════════════════════════════════════════════════════════
-df = pd.read_csv('data/AmesHousing.csv')
+from pathlib import Path
+DATA_PATH = Path(__file__).parent / "data" / "AmesHousing.csv"
+df = pd.read_csv(DATA_PATH)
 df.columns = df.columns.str.strip()
 print(f"BƯỚC 0: DỮ LIỆU GỐC — {df.shape[0]} dòng, {df.shape[1]} cột")
 
