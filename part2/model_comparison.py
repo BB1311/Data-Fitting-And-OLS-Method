@@ -1,8 +1,5 @@
-from __future__ import annotations
-
 import os
 import sys
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -17,10 +14,7 @@ from part1.ols_implementation import OLSRegressor, coef_inference, model_metrics
 from part2.data_pipeline import run_vif_check
 
 
-def _as_numeric_dataframe(
-    X: pd.DataFrame | pd.Series | np.ndarray,
-    feature_names: list[str] | None = None,
-) -> pd.DataFrame:
+def _as_numeric_dataframe(X, feature_names=None):
     """
     Chuẩn hóa X về DataFrame số để các hàm OLS/VIF dùng chung một kiểu dữ liệu.
     """
@@ -52,7 +46,7 @@ def _as_numeric_dataframe(
     return X_df
 
 
-def _as_numeric_vector(y: pd.Series | np.ndarray | list[float]) -> np.ndarray:
+def _as_numeric_vector(y):
     """Chuẩn hóa y về vector 1 chiều dạng float."""
     y_arr = np.asarray(y, dtype=float).ravel()
     if not np.isfinite(y_arr).all():
@@ -60,18 +54,18 @@ def _as_numeric_vector(y: pd.Series | np.ndarray | list[float]) -> np.ndarray:
     return y_arr
 
 
-def _check_xy_shape(X: pd.DataFrame, y: np.ndarray) -> None:
+def _check_xy_shape(X, y):
     """Kiểm tra số dòng của X và y có khớp nhau không."""
     if X.shape[0] != y.shape[0]:
         raise ValueError(f"X và y không cùng số dòng: X={X.shape[0]}, y={y.shape[0]}")
 
 
-def _fit_ols(X: pd.DataFrame, y: np.ndarray) -> OLSRegressor:
+def _fit_ols(X, y):
     """Fit OLS tự cài đặt ở part 1 trên DataFrame đã chọn cột."""
     return OLSRegressor(fit_intercept=True).fit(X.to_numpy(), y)
 
 
-def _safe_model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int) -> dict[str, Any]:
+def _safe_model_metrics(y, y_hat, p):
     """Tính metric, có xử lý riêng trường hợp fit hoàn hảo làm RSS = 0."""
     try:
         return model_metrics(y, y_hat, p=p, verbose=False)
@@ -97,11 +91,7 @@ def _safe_model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int) -> dict[str, A
         }
 
 
-def ols_coefficient_table(
-    X: pd.DataFrame | pd.Series | np.ndarray,
-    y: pd.Series | np.ndarray | list[float],
-    feature_names: list[str] | None = None,
-) -> pd.DataFrame:
+def ols_coefficient_table(X, y, feature_names=None):
     """
     Fit OLS và trả về bảng hệ số, SE, t-stat, p-value cho từng biến.
 
@@ -136,14 +126,14 @@ def ols_coefficient_table(
 
 
 def backward_elimination_pvalue(
-    X: pd.DataFrame | pd.Series | np.ndarray,
-    y: pd.Series | np.ndarray | list[float],
-    alpha: float = 0.05,
-    min_features: int = 1,
-    max_iter: int | None = None,
-    feature_names: list[str] | None = None,
-    verbose: bool = True,
-) -> dict[str, Any]:
+    X,
+    y,
+    alpha=0.05,
+    min_features=1,
+    max_iter=None,
+    feature_names=None,
+    verbose=True,
+):
     """
     Loại biến theo p-value bằng backward elimination.
 
@@ -162,8 +152,8 @@ def backward_elimination_pvalue(
 
     max_iter = X_df.shape[1] if max_iter is None else max_iter
     selected = X_df.columns.tolist()
-    dropped: list[str] = []
-    history: list[dict[str, Any]] = []
+    dropped = []
+    history = []
 
     for iteration in range(1, max_iter + 1):
         if len(selected) <= min_features:
@@ -252,14 +242,14 @@ def backward_elimination_pvalue(
 
 
 def backward_elimination_vif(
-    X: pd.DataFrame | pd.Series | np.ndarray,
-    y: pd.Series | np.ndarray | list[float] | None = None,
-    threshold: float = 10.0,
-    min_features: int = 1,
-    max_iter: int | None = None,
-    feature_names: list[str] | None = None,
-    verbose: bool = True,
-) -> dict[str, Any]:
+    X,
+    y=None,
+    threshold=10.0,
+    min_features=1,
+    max_iter=None,
+    feature_names=None,
+    verbose=True,
+):
     """
     Loại biến theo VIF để giảm đa cộng tuyến.
 
@@ -275,8 +265,8 @@ def backward_elimination_vif(
 
     max_iter = X_df.shape[1] if max_iter is None else max_iter
     selected = X_df.columns.tolist()
-    dropped: list[str] = []
-    history: list[dict[str, Any]] = []
+    dropped = []
+    history = []
 
     for iteration in range(1, max_iter + 1):
         if len(selected) <= min_features:
@@ -317,7 +307,7 @@ def backward_elimination_vif(
                 f"(VIF={worst_vif:.4f})"
             )
 
-    result: dict[str, Any] = {
+    result = {
         "X_selected": X_df[selected],
         "selected_features": selected,
         "dropped_features": dropped,
@@ -335,154 +325,75 @@ def backward_elimination_vif(
     return result
 
 
-class OLSFeatureSelector:
+def select_features_ols(
+    X,
+    y,
+    method="both",
+    alpha=0.05,
+    vif_threshold=10.0,
+    min_features=1,
+    max_iter=None,
+    feature_names=None,
+    verbose=True,
+):
     """
-    Mô hình OLS có chọn biến theo p-value, VIF, hoặc kết hợp cả hai.
+    Hàm tiện ích một dòng để chọn biến OLS.
 
     method:
       - "pvalue": chỉ loại theo p-value.
       - "vif": chỉ loại theo VIF.
       - "both": loại VIF trước, sau đó loại p-value.
     """
+    X_df = _as_numeric_dataframe(X, feature_names)
+    y_arr = _as_numeric_vector(y)
+    _check_xy_shape(X_df, y_arr)
 
-    def __init__(
-        self,
-        method: str = "both",
-        alpha: float = 0.05,
-        vif_threshold: float = 10.0,
-        min_features: int = 1,
-        max_iter: int | None = None,
-        verbose: bool = True,
-    ):
-        if method not in {"pvalue", "vif", "both"}:
-            raise ValueError("method phải là 'pvalue', 'vif', hoặc 'both'.")
-        self.method = method
-        self.alpha = alpha
-        self.vif_threshold = vif_threshold
-        self.min_features = min_features
-        self.max_iter = max_iter
-        self.verbose = verbose
+    if method == "pvalue":
+        return backward_elimination_pvalue(
+            X_df,
+            y_arr,
+            alpha=alpha,
+            min_features=min_features,
+            max_iter=max_iter,
+            verbose=verbose,
+        )
 
-        self.selected_features_: list[str] | None = None
-        self.dropped_features_: list[str] = []
-        self.history_: list[dict[str, Any]] = []
-        self.model_: OLSRegressor | None = None
-        self.coef_table_: pd.DataFrame | None = None
-        self.vif_table_: pd.DataFrame | None = None
-        self.metrics_: dict[str, Any] | None = None
-        self.feature_names_in_: list[str] | None = None
+    if method == "vif":
+        return backward_elimination_vif(
+            X_df,
+            y_arr,
+            threshold=vif_threshold,
+            min_features=min_features,
+            max_iter=max_iter,
+            verbose=verbose,
+        )
 
-    def fit(
-        self,
-        X: pd.DataFrame | pd.Series | np.ndarray,
-        y: pd.Series | np.ndarray | list[float],
-        feature_names: list[str] | None = None,
-    ) -> "OLSFeatureSelector":
-        """Chọn biến và fit OLS cuối cùng trên các biến được giữ lại."""
-        X_df = _as_numeric_dataframe(X, feature_names)
-        y_arr = _as_numeric_vector(y)
-        _check_xy_shape(X_df, y_arr)
-        self.feature_names_in_ = X_df.columns.tolist()
+    if method == "both":
+        vif_result = backward_elimination_vif(
+            X_df,
+            y=None,
+            threshold=vif_threshold,
+            min_features=min_features,
+            max_iter=max_iter,
+            verbose=verbose,
+        )
+        pvalue_result = backward_elimination_pvalue(
+            vif_result["X_selected"],
+            y_arr,
+            alpha=alpha,
+            min_features=min_features,
+            max_iter=max_iter,
+            verbose=verbose,
+        )
 
-        current_X = X_df
+        pvalue_result["dropped_features"] = (
+            vif_result["dropped_features"] + pvalue_result["dropped_features"]
+        )
+        pvalue_result["history"] = vif_result["history"] + pvalue_result["history"]
+        pvalue_result["vif_table"] = run_vif_check(
+            pvalue_result["X_selected"],
+            threshold=vif_threshold,
+        )
+        return pvalue_result
 
-        if self.method in {"vif", "both"}:
-            vif_result = backward_elimination_vif(
-                current_X,
-                y=None,
-                threshold=self.vif_threshold,
-                min_features=self.min_features,
-                max_iter=self.max_iter,
-                verbose=self.verbose,
-            )
-            current_X = vif_result["X_selected"]
-            self.dropped_features_.extend(vif_result["dropped_features"])
-            self.history_.extend(vif_result["history"])
-            self.vif_table_ = vif_result["vif_table"]
-
-        if self.method in {"pvalue", "both"}:
-            pvalue_result = backward_elimination_pvalue(
-                current_X,
-                y_arr,
-                alpha=self.alpha,
-                min_features=self.min_features,
-                max_iter=self.max_iter,
-                verbose=self.verbose,
-            )
-            current_X = pvalue_result["X_selected"]
-            self.dropped_features_.extend(pvalue_result["dropped_features"])
-            self.history_.extend(pvalue_result["history"])
-
-        self.selected_features_ = current_X.columns.tolist()
-        self.model_ = _fit_ols(current_X, y_arr)
-        y_hat = self.model_.predict(current_X.to_numpy())
-        self.coef_table_ = ols_coefficient_table(current_X, y_arr)
-        self.vif_table_ = run_vif_check(current_X, threshold=self.vif_threshold)
-        self.metrics_ = _safe_model_metrics(y_arr, y_hat, p=len(self.selected_features_))
-        return self
-
-    def transform(self, X: pd.DataFrame | pd.Series | np.ndarray) -> pd.DataFrame:
-        """Giữ lại đúng các cột đã được chọn trong fit()."""
-        if self.selected_features_ is None:
-            raise RuntimeError("Hãy gọi fit() trước khi transform().")
-        names = None if isinstance(X, (pd.DataFrame, pd.Series)) else self.feature_names_in_
-        X_df = _as_numeric_dataframe(X, feature_names=names)
-        missing = [col for col in self.selected_features_ if col not in X_df.columns]
-        if missing:
-            raise ValueError(f"X thiếu các cột đã được chọn khi fit: {missing}")
-        return X_df[self.selected_features_]
-
-    def predict(self, X: pd.DataFrame | pd.Series | np.ndarray) -> np.ndarray:
-        """Dự đoán y bằng OLS đã fit trên tập biến được chọn."""
-        if self.model_ is None:
-            raise RuntimeError("Hãy gọi fit() trước khi predict().")
-        X_selected = self.transform(X)
-        return self.model_.predict(X_selected.to_numpy())
-
-    def summary(self) -> dict[str, Any]:
-        """Trả về tóm tắt kết quả chọn biến để đưa vào notebook/báo cáo."""
-        if self.selected_features_ is None:
-            raise RuntimeError("Hãy gọi fit() trước khi summary().")
-        return {
-            "method": self.method,
-            "alpha": self.alpha,
-            "vif_threshold": self.vif_threshold,
-            "selected_features": self.selected_features_,
-            "dropped_features": self.dropped_features_,
-            "history": self.history_,
-            "coef_table": self.coef_table_,
-            "vif_table": self.vif_table_,
-            "metrics": self.metrics_,
-        }
-
-
-def select_features_ols(
-    X: pd.DataFrame | pd.Series | np.ndarray,
-    y: pd.Series | np.ndarray | list[float],
-    method: str = "both",
-    alpha: float = 0.05,
-    vif_threshold: float = 10.0,
-    min_features: int = 1,
-    max_iter: int | None = None,
-    feature_names: list[str] | None = None,
-    verbose: bool = True,
-) -> dict[str, Any]:
-    """
-    Hàm tiện ích một dòng: chọn biến, fit OLS, và trả về summary.
-    """
-    selector = OLSFeatureSelector(
-        method=method,
-        alpha=alpha,
-        vif_threshold=vif_threshold,
-        min_features=min_features,
-        max_iter=max_iter,
-        verbose=verbose,
-    ).fit(X, y, feature_names=feature_names)
-    return selector.summary() | {"selector": selector}
-
-
-# Alias để dễ gọi trong notebook theo nhiều cách đặt tên khác nhau.
-ols_pvalue_selection = backward_elimination_pvalue
-ols_vif_selection = backward_elimination_vif
-vif_feature_selection = backward_elimination_vif
-backward_elimination = backward_elimination_pvalue
+    raise ValueError("method phải là 'pvalue', 'vif', hoặc 'both'.")
