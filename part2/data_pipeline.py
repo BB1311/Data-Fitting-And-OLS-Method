@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-
+from part1.ols_implementation import vif
 """
 data_pipeline.py
 ================
@@ -531,6 +531,28 @@ class DataPipeline:
     # ------------------------------------------------------------------
     # PHẦN F: VIF — loại cột đa cộng tuyến
     # ------------------------------------------------------------------
+    def run_vif_check(X: pd.DataFrame, threshold: float = 10.0) -> pd.DataFrame:
+        """
+        Cầu nối: Chuyển DataFrame thành Numpy array để đưa vào hàm vif (Part 1), 
+        sau đó trả về DataFrame chứa tên cột và điểm VIF tương ứng, sắp xếp giảm dần.
+        """
+        # 1. Chuyển DataFrame sang Numpy array
+        X_array = X.values
+        
+        # 2. Gọi hàm vif từ Part 1. 
+        # Lưu ý: Set verbose=False để tránh in ra bảng VIF quá nhiều lần trong vòng lặp while.
+        vif_scores = vif(X_array, verbose=False)
+        
+        # 3. Tạo DataFrame kết quả kết hợp giữa Tên cột và Điểm VIF
+        vif_df = pd.DataFrame({
+            'feature': X.columns,
+            'VIF': vif_scores
+        })
+        
+        # 4. Sắp xếp giảm dần theo VIF để df.iloc[0] luôn là cột có VIF cao nhất
+        vif_df = vif_df.sort_values(by='VIF', ascending=False).reset_index(drop=True)
+        
+        return vif_df
     def drop_high_vif(
         self,
         X: pd.DataFrame,
@@ -547,15 +569,22 @@ class DataPipeline:
         """
         dropped = []
         for iteration in range(max_iter):
+            # Gọi hàm cầu nối đã viết ở trên
             vif_df = run_vif_check(X, threshold=threshold)
+            
+            # Cột có VIF cao nhất đang nằm ở dòng đầu tiên
             worst = vif_df.iloc[0]
 
+            # Dừng nếu giá trị lớn nhất đã thỏa mãn ngưỡng hoặc là vô cực âm (hiếm xảy ra)
             if not np.isinf(worst['VIF']) and worst['VIF'] <= threshold:
                 break
 
-            print(f"  [VIF iter {iteration+1}] Loại '{worst['feature']}' (VIF={worst['VIF']})")
+            print(f"  [VIF iter {iteration+1}] Loại '{worst['feature']}' (VIF={worst['VIF']:.4f})")
+            
+            # Xóa cột khỏi DataFrame
             X = X.drop(columns=[worst['feature']])
             dropped.append(worst['feature'])
+            
         print(f"\n[VIF] Đã loại {len(dropped)} cột: {dropped}")
         return X, dropped
 

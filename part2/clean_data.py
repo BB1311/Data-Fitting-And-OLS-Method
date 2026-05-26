@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-
+from pathlib import Path
 
 """
 Quy trình:
@@ -31,9 +31,8 @@ def clean_data(input_path: str) -> pd.DataFrame:
     # ══════════════════════════════════════════════════════════════════════
     # BƯỚC 0: ĐỌC DỮ LIỆU
     # ══════════════════════════════════════════════════════════════════════
-    from pathlib import Path
-    DATA_PATH = Path(__file__).parent / "data" / "AmesHousing.csv"
-    df = pd.read_csv(DATA_PATH)
+
+    df = pd.read_csv(input_path)
     df.columns = df.columns.str.strip()
     print(f"BƯỚC 0: DỮ LIỆU GỐC — {df.shape[0]} dòng, {df.shape[1]} cột")
 
@@ -591,6 +590,18 @@ def clean_data(input_path: str) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    df_clean = clean_data('data/AmesHousing.csv')
-    df_clean.to_csv('data/AmesHousing_cleaned.csv', index=False)
-    print(f"\nĐã lưu file cleaned: data/AmesHousing_cleaned.csv")
+    from pathlib import Path
+    
+    # Lấy thư mục chứa file clean_data.py hiện tại (chính là thư mục part2)
+    current_dir = Path(__file__).parent
+    
+    # Tạo đường dẫn an toàn cho file input và output (sửa lỗi comment 3)
+    input_file_path = current_dir / "data" / "AmesHousing.csv"
+    output_file_path = current_dir / "data" / "AmesHousing_cleaned.csv"
+    
+    # Gọi hàm và truyền path vào
+    df_clean = clean_data(input_file_path)
+    
+    # Lưu file
+    df_clean.to_csv(output_file_path, index=False)
+    print(f"\nĐã lưu file cleaned: {output_file_path}")
