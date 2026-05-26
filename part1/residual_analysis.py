@@ -122,31 +122,3 @@ def residual_plots(X: np.ndarray, y: np.ndarray, beta_hat: np.ndarray):
         print("[THÔNG BÁO] Không có điểm nào có độ đòn bẩy (Leverage) vượt ngưỡng tiêu chuẩn.")
 
     return fig, ((ax1, ax2), (ax3, ax4))
-
-# KHỐI DEMO (Chạy độc lập để test hàm)
-if __name__ == "__main__":
-    # Tạo dữ liệu giả lập có chủ ý (có điểm outlier)
-    np.random.seed(42)
-    n_samples = 100
-    X_demo = np.random.uniform(0, 10, size=(n_samples, 2))
-    
-    # y = 3 + 2*X1 - 1.5*X2 + nhiễu
-    true_beta = np.array([3.0, 2.0, -1.5])
-    X_design_demo = np.column_stack([np.ones(n_samples), X_demo])
-    y_demo = X_design_demo @ true_beta + np.random.normal(0, 2, n_samples)
-    
-    # Tạo ra 2 điểm outlier (dị thường) cực mạnh để Cook's Distance bắt được
-    X_demo[95] = [9.5, 9.5]
-    y_demo[95] = 50.0  # Outlier 1
-    
-    X_demo[98] = [0.5, 0.5]
-    y_demo[98] = -30.0 # Outlier 2
-    
-    # Tính toán OLS (dùng np.linalg.lstsq cho nhanh trong khối demo)
-    X_design_fit = np.column_stack([np.ones(n_samples), X_demo])
-    beta_hat_demo, _, _, _ = np.linalg.lstsq(X_design_fit, y_demo, rcond=None)
-    
-    # Gọi hàm vẽ
-    print("Đang tạo biểu đồ Phân tích phần dư...")
-    fig, axes = residual_plots(X_demo, y_demo, beta_hat_demo)
-    plt.show()
