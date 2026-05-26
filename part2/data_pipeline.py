@@ -1,4 +1,3 @@
-import warnings
 import numpy as np
 import pandas as pd
 
@@ -27,7 +26,7 @@ Usage
         scale=True,
     )
 
-    X_train_clean = pipe.fit_transform(X_train, y_train)
+    X_train_clean, y_train_clean = pipe.fit_transform(X_train, y_train)
     X_test_clean  = pipe.transform(X_test)
 
     vif_df = run_vif_check(X_train_clean, threshold=10)
@@ -52,8 +51,7 @@ ORDINAL_MAPS = {
     'Fireplace Qu':   {'None':0,'Po':1,'Fa':2,'TA':3,'Gd':4,'Ex':5},
     'Garage Qual':    {'None':0,'Po':1,'Fa':2,'TA':3,'Gd':4,'Ex':5},
     'Garage Cond':    {'None':0,'Po':1,'Fa':2,'TA':3,'Gd':4,'Ex':5},
-    'Pool QC': {'None':0,'Fa':1,'TA':2,'Gd':3,'Ex':4}, 
-    'Fence':   {'None':0,'MnWw':1,'GdWo':2,'MnPrv':3,'GdPrv':4}, 
+    'Pool QC':        {'None':0,'Fa':1,'TA':2,'Gd':3,'Ex':4},
 
     # Exposure
     'Bsmt Exposure':  {'None':0,'No':1,'Mn':2,'Av':3,'Gd':4},
@@ -77,7 +75,6 @@ ORDINAL_MAPS = {
 
     # Functional
     'Functional':     {'Sal':0,'Sev':1,'Maj2':2,'Maj1':3,'Mod':4,'Min2':5,'Min1':6,'Typ':7},
-
 }
 
 # Các cột danh nghĩa (không có thứ bậc) → One-hot encoding
@@ -193,10 +190,10 @@ class DataPipeline:
         scale: bool = True,
         drop_first: bool = True,
         # --- CÁC THAM SỐ MỚI THÊM VÀO ---
-        log_target: bool = True,              
-        engineer_features: bool = True,       
-        log_skewed_features: bool = True,     
-        add_interactions: bool = True,        
+        log_target: bool = True,
+        engineer_features: bool = True,
+        log_skewed_features: bool = True,
+        add_interactions: bool = True,
     ):
         self.outlier_method    = outlier_method
         self.outlier_threshold = outlier_threshold
@@ -205,25 +202,25 @@ class DataPipeline:
         self.encoding          = encoding
         self.scale             = scale
         self.drop_first        = drop_first
-        
+
         self.log_target          = log_target
         self.engineer_features   = engineer_features
         self.log_skewed_features = log_skewed_features
         self.add_interactions    = add_interactions
-        
+
         # --- CÁC BIẾN LƯU TRỮ MỚI THÊM VÀO ---
-        self._winsor_limits: dict  = {}   
-        self._iqr_bounds: dict     = {}   
-        self._scale_params: dict   = {}   
-        self._ordinal_medians: dict = {}      # Lưu median để tránh leakage
-        self._skewed_cols_to_log: list = []   # Lưu cột cần log
-        self._onehot_cols_: list   = []   
-        self._ordinal_cols_: list  = []   
-        self._dummy_cols_: list    = []   
-        self._feature_names_: list = []   
-        self._ordinal_cat_order: dict = {}  # Lưu category order từ train
+        self._winsor_limits: dict  = {}
+        self._iqr_bounds: dict     = {}
+        self._scale_params: dict   = {}
+        self._ordinal_medians: dict = {}
+        self._skewed_cols_to_log: list = []
+        self._onehot_cols_: list   = []
+        self._ordinal_cols_: list  = []
+        self._dummy_cols_: list    = []
+        self._feature_names_: list = []
+        self._ordinal_cat_order: dict = {}
         self._fitted = False
-    
+
 
     # ------------------------------------------------------------------
     # PHẦN MỚI: FEATURE ENGINEERING & NON-LINEAR TRANSFORMS
@@ -248,12 +245,11 @@ class DataPipeline:
         """Quét tìm các cột số bị lệch (skew > 0.75) trên tập Train"""
         if not self.log_skewed_features: return
         num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-        valid_cols = [c for c in num_cols if X[c].min() >= 0]  # Chỉ lấy cột không âm
+        valid_cols = [c for c in num_cols if X[c].min() >= 0]
         skewness = X[valid_cols].skew()
 
         self._skewed_cols_to_log = skewness[skewness > 0.75].index.tolist()
 
-        # Loại ordinal cols (đã encode thành số) và binary cols (0/1)
         binary_cols = [c for c in valid_cols if X[c].nunique() <= 2]
         self._skewed_cols_to_log = [
             c for c in self._skewed_cols_to_log
@@ -269,7 +265,7 @@ class DataPipeline:
             if col in X.columns:
                 X[col] = np.log1p(X[col])
         return X
-    
+
 
     # ------------------------------------------------------------------
     # PHẦN A: Outlier
@@ -277,7 +273,6 @@ class DataPipeline:
     def _detect_outlier_cols(self, X: pd.DataFrame) -> list:
         """Tự động chọn các cột số liên tục để xử lý outlier."""
         num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-        # Bỏ qua cột nhị phân (chỉ có 0/1) và cột đếm nhỏ (Garage Cars, v.v.)
         continuous = [
             c for c in num_cols
             if X[c].nunique() > 10 and c not in ('Mo Sold',)
@@ -294,7 +289,6 @@ class DataPipeline:
             for col in cols:
                 vals = X[col].dropna()
                 self._winsor_limits[col] = (vals.quantile(lo), vals.quantile(hi))
-            # Xử lý cả target nếu được truyền vào
             if y is not None:
                 vals_y = y.dropna()
                 self._winsor_limits['__target__'] = (
@@ -320,8 +314,6 @@ class DataPipeline:
                 X[col] = X[col].clip(lower=lo, upper=hi)
 
         elif self.outlier_method == 'remove':
-            # Trên train: hàng nằm ngoài sẽ bị xóa
-            # Trên test: clip thay vì xóa để không mất hàng
             for col, (lb, ub) in self._iqr_bounds.items():
                 if col in X.columns:
                     X[col] = X[col].clip(lower=lb, upper=ub)
@@ -369,10 +361,9 @@ class DataPipeline:
             if col in X.columns and col in ORDINAL_MAPS:
                 mapped = X[col].map(ORDINAL_MAPS[col])
                 self._ordinal_medians[col] = mapped.median()
-        
+
         for col in self._ordinal_cols_:
             if col in X.columns and col not in ORDINAL_MAPS:
-                # Lưu thứ tự category từ train để dùng lại trên test
                 self._ordinal_cat_order[col] = list(pd.Categorical(X[col]).categories)
 
     def _apply_ordinal(self, X: pd.DataFrame) -> pd.DataFrame:
@@ -383,11 +374,9 @@ class DataPipeline:
             if col in ORDINAL_MAPS:
                 X[col] = X[col].map(ORDINAL_MAPS[col])
                 if X[col].isna().any():
-                    # --- FIX LEAKAGE: Lấy median đã học từ Train ra xài ---
                     med_val = self._ordinal_medians.get(col, 0)
                     X[col] = X[col].fillna(med_val)
             else:
-                # ✅ Dùng category order đã học từ train, không encode cục bộ
                 if col in self._ordinal_cat_order:
                     cat = pd.Categorical(X[col], categories=self._ordinal_cat_order[col])
                     X[col] = cat.codes
@@ -436,7 +425,7 @@ class DataPipeline:
         return X
 
     # ------------------------------------------------------------------
-    # PHẦN D: fit / transform / fit_transform
+    # PHẦN D: _fit_core (dùng chung bởi fit và fit_transform)
     # ------------------------------------------------------------------
     def _fit_core(self, X_temp: pd.DataFrame):
         """Học encoding + log + scale trên X đã qua outlier transform."""
@@ -452,13 +441,32 @@ class DataPipeline:
             print("  [Scale] Học tham số z-score...")
             self._fit_scale(X_enc)
 
+    # ------------------------------------------------------------------
+    # PHẦN E: fit / transform / fit_transform
+    # ------------------------------------------------------------------
     def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> 'DataPipeline':
+        """
+        Học tham số pipeline trên tập train.
+        Dùng cùng flow với fit_transform để đảm bảo tương đương:
+          - Apply outlier TRƯỚC khi học encoding/scale.
+        """
         print("=== DataPipeline.fit() ===")
         _y = np.log1p(y) if (self.log_target and y is not None) else y
+
         X_temp = self._create_new_features(X)
+
+        # Bước 1: học outlier params
         if self.outlier_method:
             print(f"  [Outlier] Học tham số outlier (method='{self.outlier_method}')...")
             self._fit_outlier(X_temp, _y)
+
+        # Bước 2: apply outlier TRƯỚC khi học encoding/scale (đồng nhất với fit_transform)
+        if self.outlier_method == 'remove' and _y is not None:
+            X_temp, _y = self._remove_outlier_rows(X_temp, _y)
+        elif self.outlier_method == 'winsorize':
+            X_temp = self._transform_outlier_X(X_temp)
+
+        # Bước 3: học encoding/scale trên X đã xử lý outlier
         self._fit_core(X_temp)
         self._fitted = True
         print("  fit() hoàn tất.\n")
@@ -466,7 +474,7 @@ class DataPipeline:
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         if not self._fitted: raise RuntimeError("Gọi fit() trước khi transform().")
-        
+
         X = self._create_new_features(X)
         X = self._transform_outlier_X(X)
         X = self._apply_ordinal(X)
@@ -480,6 +488,10 @@ class DataPipeline:
         return X
 
     def fit_transform(self, X: pd.DataFrame, y: pd.Series | None = None):
+        """
+        Học và transform trên tập train.
+        Trả về tuple (X_out, y) — không phải chỉ X_out.
+        """
         if self.log_target and y is not None:
             print("  [Target] Áp dụng np.log1p(y)")
             y = np.log1p(y)
@@ -515,8 +527,9 @@ class DataPipeline:
         self._feature_names_ = X_out.columns.tolist()
         print(f"  Shape sau pipeline: {X_out.shape}")
         return X_out, y
+
     # ------------------------------------------------------------------
-    # PHẦN E: VIF — loại cột đa cộng tuyến
+    # PHẦN F: VIF — loại cột đa cộng tuyến
     # ------------------------------------------------------------------
     def drop_high_vif(
         self,
@@ -536,11 +549,10 @@ class DataPipeline:
         for iteration in range(max_iter):
             vif_df = run_vif_check(X, threshold=threshold)
             worst = vif_df.iloc[0]
-    
-            # Dừng nếu VIF cao nhất đã <= threshold (và không phải inf)
+
             if not np.isinf(worst['VIF']) and worst['VIF'] <= threshold:
                 break
-    
+
             print(f"  [VIF iter {iteration+1}] Loại '{worst['feature']}' (VIF={worst['VIF']})")
             X = X.drop(columns=[worst['feature']])
             dropped.append(worst['feature'])
@@ -571,5 +583,3 @@ class DataPipeline:
         print(f"  Scale params learned: {len(self._scale_params)} cột")
         print(f"  Feature names out   : {len(self._feature_names_)} cột")
         print("=" * 55)
-
-
