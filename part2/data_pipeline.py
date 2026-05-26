@@ -98,60 +98,7 @@ NOMINAL_COLS = [
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 1. HÀM TIỆN ÍCH — VIF
-# ══════════════════════════════════════════════════════════════════════
-def run_vif_check(X: pd.DataFrame, threshold: float = 10.0) -> pd.DataFrame:
-    """
-    Tính VIF cho tất cả các cột số trong X.
-
-    VIF_j = 1 / (1 - R²_j), trong đó R²_j là R² khi hồi quy cột j
-    theo tất cả các cột còn lại.
-
-    Parameters
-    ----------
-    X         : DataFrame chứa toàn bộ features (đã encode và scale)
-    threshold : Ngưỡng cảnh báo đa cộng tuyến (thường 5 hoặc 10)
-
-    Returns
-    -------
-    DataFrame với cột 'feature' và 'VIF', sắp xếp giảm dần theo VIF.
-    """
-    from numpy.linalg import lstsq
-
-    X_num = X.select_dtypes(include=[np.number]).copy()
-    X_num = X_num.dropna(axis=1)
-    cols = X_num.columns.tolist()
-
-    vifs = []
-    for j, col in enumerate(cols):
-        y_j = X_num[col].values
-        X_others = X_num.drop(columns=[col]).values
-
-        # Thêm intercept
-        X_others_int = np.column_stack([np.ones(len(X_others)), X_others])
-        beta, _, _, _ = lstsq(X_others_int, y_j, rcond=None)
-        y_pred = X_others_int @ beta
-
-        ss_res = np.sum((y_j - y_pred) ** 2)
-        ss_tot = np.sum((y_j - y_j.mean()) ** 2)
-
-        r2 = 1 - ss_res / ss_tot if ss_tot > 1e-10 else 0.0
-        vif = 1 / (1 - r2) if r2 < 1 - 1e-10 else np.inf
-        vifs.append({'feature': col, 'VIF': round(vif, 2)})
-
-    vif_df = pd.DataFrame(vifs).sort_values('VIF', ascending=False).reset_index(drop=True)
-
-    high_vif = vif_df[vif_df['VIF'] > threshold]
-    if not high_vif.empty:
-        print(f"\n[VIF] {len(high_vif)} cột có VIF > {threshold} (đa cộng tuyến cao):")
-        print(high_vif.to_string(index=False))
-    else:
-        print(f"\n[VIF] Không có cột nào có VIF > {threshold}. OK.")
-
-    return vif_df
-
-# ══════════════════════════════════════════════════════════════════════
-# 2. CLASS DataPipeline
+# CLASS DataPipeline
 # ══════════════════════════════════════════════════════════════════════
 class DataPipeline:
     """
