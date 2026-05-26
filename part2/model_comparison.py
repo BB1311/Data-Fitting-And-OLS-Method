@@ -463,8 +463,3 @@ def run_model_comparison(data_path: str = DATA_PATH) -> dict:
         "pipe"      : pipe,
     }
 
-# ══════════════════════════════════════════════════════════════════════
-# ĐIỂM BẮT ĐẦU CHẠY SCRIPT
-# ══════════════════════════════════════════════════════════════════════
-if __name__ == "__main__":
-    output = run_model_comparison()
