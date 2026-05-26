@@ -1,6 +1,14 @@
 import numpy as np
 import pandas as pd
+import sys
+import os
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+
 from part1.ols_implementation import vif
+
 """
 data_pipeline.py
 ================
