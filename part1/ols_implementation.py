@@ -1,5 +1,6 @@
 import numpy as np
 from scipy import stats
+from sklearn.linear_model import LinearRegression
 
 def _ols_core_solver(X_design: np.ndarray, y: np.ndarray) -> dict:
     """
@@ -539,6 +540,112 @@ def verify_with_sklearn(X: np.ndarray, y: np.ndarray) -> dict:
         "passed":        ok,
     }
     
+
+def verify_hat_matrix_numpy(X: np.ndarray, H_scratch: np.ndarray, add_intercept: bool = True) -> dict:
+    """
+    Xác minh Ma trận chiếu (Hat Matrix) bằng numpy (dùng pinv).
+    """
+    X = np.asarray(X, dtype=float)
+    if X.ndim == 1:
+        X = X.reshape(-1, 1)
+        
+    if add_intercept:
+        X_design = np.hstack([np.ones((X.shape[0], 1)), X])
+    else:
+        X_design = X
+        
+    H_numpy = X_design @ np.linalg.pinv(X_design)
+    
+    max_diff = float(np.max(np.abs(H_scratch - H_numpy)))
+    passed = max_diff < 1e-8
+    
+    return {
+        "H_numpy": H_numpy,
+        "max_diff": max_diff,
+        "passed": passed
+    }
+
+
+def verify_coef_inference_numpy(X: np.ndarray, beta_hat: np.ndarray, sigma2: float, 
+                                se_scratch: np.ndarray, t_stats_scratch: np.ndarray, 
+                                p_values_scratch: np.ndarray) -> dict:
+    """
+    Xác minh các chỉ số suy diễn thống kê (SE, t-stats, p-values) bằng numpy và scipy.stats.
+    """
+    X = np.asarray(X, dtype=float)
+    beta_hat = np.asarray(beta_hat, dtype=float).ravel()
+    n = X.shape[0]
+    
+    if X.shape[1] == len(beta_hat) - 1:
+        X_design = np.hstack([np.ones((n, 1)), X.reshape(n, -1)])
+    elif X.shape[1] == len(beta_hat):
+        X_design = X
+    else:
+        raise ValueError("Số lượng cột của X không khớp với kích thước của vector beta_hat.")
+        
+    k = X_design.shape[1]
+    df = n - k
+    
+    XtX_inv_np = np.linalg.pinv(X_design.T @ X_design)
+    var_beta_np = sigma2 * np.diag(XtX_inv_np)
+    se_np = np.sqrt(np.maximum(var_beta_np, 0.0))
+    t_stats_np = beta_hat / se_np
+    p_values_np = 2 * (1.0 - stats.t.cdf(np.abs(t_stats_np), df=df))
+    
+    max_diff_se = float(np.max(np.abs(se_scratch - se_np)))
+    max_diff_t = float(np.max(np.abs(t_stats_scratch - t_stats_np)))
+    max_diff_p = float(np.max(np.abs(p_values_scratch - p_values_np)))
+    
+    passed = (max_diff_se < 1e-8) and (max_diff_t < 1e-8) and (max_diff_p < 1e-8)
+    
+    return {
+        "se_numpy": se_np,
+        "t_stats_numpy": t_stats_np,
+        "p_values_numpy": p_values_np,
+        "max_diff_se": max_diff_se,
+        "max_diff_t": max_diff_t,
+        "max_diff_p": max_diff_p,
+        "passed": passed
+    }
+
+
+def verify_vif_sklearn(X: np.ndarray, vif_scratch: np.ndarray) -> dict:
+    """
+    Xác minh VIF bằng mô hình LinearRegression từ sklearn.
+    """
+    X = np.asarray(X, dtype=float)
+    p = X.shape[1]
+    vif_sklearn = np.zeros(p)
+    
+    for j in range(p):
+        y_target = X[:, j]
+        X_features = np.delete(X, j, axis=1)
+        
+        model = LinearRegression(fit_intercept=True)
+        model.fit(X_features, y_target)
+        r2 = model.score(X_features, y_target)
+        
+        if r2 >= 1.0 or np.isclose(r2, 1.0):
+            vif_sklearn[j] = np.inf
+        else:
+            vif_sklearn[j] = 1.0 / (1.0 - r2)
+            
+    diffs = []
+    for vs, vsk in zip(vif_scratch, vif_sklearn):
+        if np.isinf(vs) and np.isinf(vsk):
+            diffs.append(0.0)
+        else:
+            diffs.append(abs(vs - vsk))
+            
+    max_diff = float(np.max(diffs))
+    passed = max_diff < 1e-8
+    
+    return {
+        "vif_sklearn": vif_sklearn,
+        "max_diff": max_diff,
+        "passed": passed
+    }
+
 
 if __name__ == "__main__":
     print("OLS IMPLEMENTATION DEMO")
