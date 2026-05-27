@@ -108,6 +108,36 @@ class TestMetricUtils(unittest.TestCase):
             ModelComparison._rmse(y_true, y_pred) + 1e-12,
         )
 
+    # ── test 4: MAE/RMSE phải tính trên thang USD (expm1), không log ──
+    def test_metrics_expm1(self):
+        """
+        Ames Housing dùng log1p(SalePrice) làm target.
+        MAE/RMSE phải báo cáo bằng USD (sau expm1), không phải log-scale.
+
+        Ví dụ: y_true = log1p(200_000), y_pred = log1p(225_000)
+          → sai số thực tế = 25_000 USD
+          → RMSE/MAE trên log-scale ≈ 0.118 (vô nghĩa kinh tế)
+        """
+        y_true = np.array([np.log1p(200_000.0)])
+        y_pred = np.array([np.log1p(225_000.0)])
+
+        actual_mae  = ModelComparison._mae(y_true, y_pred)
+        actual_rmse = ModelComparison._rmse(y_true, y_pred)
+
+        # Kỳ vọng: sai số ~25_000 USD (cho phép sai lệch nhỏ do float)
+        self.assertAlmostEqual(actual_mae,  25_000.0, delta=1.0,
+            msg=f"MAE = {actual_mae:.2f}, kỳ vọng ≈ 25000 USD")
+        self.assertAlmostEqual(actual_rmse, 25_000.0, delta=1.0,
+            msg=f"RMSE = {actual_rmse:.2f}, kỳ vọng ≈ 25000 USD")
+
+        # Đảm bảo KHÔNG tính trên log-scale (≈ 0.118, không phải 25_000)
+        self.assertGreater(actual_mae, 1_000,
+            f"MAE = {actual_mae:.4f} có vẻ tính trên log-scale, "
+            f"phải > 1000 USD (thang đo thực)")
+        self.assertGreater(actual_rmse, 1_000,
+            f"RMSE = {actual_rmse:.4f} có vẻ tính trên log-scale, "
+            f"phải > 1000 USD (thang đo thực)")
+
 
 # ══════════════════════════════════════════════════════════════════════
 # TEST SUITE 2 — split (stratified train/test)
@@ -162,6 +192,57 @@ class TestSplit(unittest.TestCase):
         test_set  = set(X_te.index.tolist())
         self.assertEqual(len(train_set & test_set), 0,
                          "Có hàng xuất hiện ở cả train lẫn test")
+
+    # ── test 4: StandardScaler chỉ fit trên X_train (không data leakage)
+    def test_no_data_leakage(self):
+        """
+        StandardScaler phải được fit_transform trên X_train,
+        và chỉ transform (không fit) trên X_test.
+
+        Nếu bị leakage: scaler fit trên toàn bộ X → mean/std bị ảnh hưởng
+        bởi X_test → thông tin tập test "rò rỉ" vào quá trình train.
+
+        Kiểm tra: mean của scaler phải ≈ mean của X_train thô,
+        KHÔNG phải mean của X_full (toàn bộ dữ liệu).
+        """
+        X, y = self._make_Xy(n=200)
+        mc   = self._mc()
+        X_tr, X_te, _, _ = mc.split(X, y)
+
+        # ModelComparison phải lưu scaler sau split/fit
+        self.assertTrue(
+            hasattr(mc, "scaler_"),
+            "mc phải có thuộc tính scaler_ sau khi split() để kiểm tra leakage"
+        )
+
+        scaler = mc.scaler_
+
+        # Mean của scaler phải khớp với X_train (chưa scale), không phải X_full
+        # Dùng X_tr gốc (trước khi transform) — mc phải lưu X_train_raw_
+        self.assertTrue(
+            hasattr(mc, "X_train_raw_"),
+            "mc phải lưu X_train_raw_ (giá trị trước scale) để kiểm tra leakage"
+        )
+        train_mean = mc.X_train_raw_.mean(axis=0).values
+        full_mean  = X.mean(axis=0).values
+
+        np.testing.assert_allclose(
+            scaler.mean_, train_mean, rtol=1e-5,
+            err_msg=(
+                "scaler.mean_ không khớp với mean của X_train → "
+                "có thể scaler đã fit trên toàn bộ data (Data Leakage!)"
+            )
+        )
+
+        # Đảm bảo mean của scaler KHÁC mean của full data
+        # (nếu không có leakage, chúng phải khác nhau vì X_train ≠ X_full)
+        if not np.allclose(train_mean, full_mean, rtol=1e-3):
+            max_diff = np.max(np.abs(scaler.mean_ - full_mean))
+            self.assertGreater(
+                max_diff, 1e-6,
+                "scaler.mean_ ≈ mean(X_full) → nghi ngờ scaler fit trên "
+                "toàn bộ data thay vì chỉ X_train (Data Leakage)"
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -406,4 +487,3 @@ class TestRidgeShrinkage(unittest.TestCase):
                 val = mc.results[key]["metrics"][metric]
                 self.assertTrue(np.isfinite(val),
                                 f"{key}.{metric} = {val} không hữu hạn")
-
