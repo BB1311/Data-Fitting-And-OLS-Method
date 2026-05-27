@@ -1,21 +1,20 @@
 """
 model_comparison.py
 ===================
-So sánh các mô hình hồi quy có kiểm soát (Regularization) trên bộ dữ liệu Ames Housing.
+Class ModelComparison — So sánh Ridge và Lasso trên Ames Housing (Phần 2).
 
-Pipeline tập trung vào:
+Quy trình:
   1. Đọc & làm sạch dữ liệu (clean_data)
-  2. Train/Test Split (80/20, phân tầng theo giá trị SalePrice)
-  3. Tiền xử lý (DataPipeline: outlier, encoding, z-score scale)
+  2. Train/Test Split (80/20, stratified theo SalePrice)
+  3. Tiền xử lý (DataPipeline)
   4. Loại bỏ đa cộng tuyến (VIF)
-  5. Xây dựng & tinh chỉnh siêu tham số cho 2 mô hình:
-       - Ridge Regression (chọn λ tối ưu qua k-fold CV)
-       - Lasso Regression (chọn λ tối ưu qua k-fold CV)
-  6. Đánh giá hiệu suất trên tập test: MAE, RMSE, R²
-  7. Trực quan hóa: Feature Importance, Lasso Coef Path, Residual Analysis
+  5. Ridge & Lasso — chọn λ tối ưu qua k-fold CV
+  6. Đánh giá trên test set: MAE, RMSE, R²
+  7. Biểu đồ: CV curve, coefficient path, feature importance,
+             actual vs predicted, residual analysis
 
-Ghi chú: Target SalePrice đã được chuyển sang log1p trong DataPipeline 
-         để giảm độ lệch (skewness).
+Ghi chú: SalePrice đã log1p bên trong DataPipeline.
+         Mọi metric tính trên không gian log.
 """
 
 import os
@@ -25,441 +24,551 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import scipy.stats as stats
 
-# Tắt cảnh báo để output console sạch sẽ
 warnings.filterwarnings("ignore")
 
-# ── THIẾT LẬP ĐƯỜNG DẪN ĐỂ IMPORT MODULE TỪ PART 1 VÀ PART 2 ─────────
+# ── sys.path ──────────────────────────────────────────────────────────
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 for _p in [_ROOT, _HERE]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-# Import các hàm từ project (đảm bảo file part1/ và part2/ có sẵn)
-from part2.clean_data         import clean_data
-from part2.data_pipeline      import DataPipeline
+from part2.clean_data        import clean_data
+from part2.data_pipeline     import DataPipeline
 from part1.ols_implementation import compute_r2
 from part1.ridge_lasso        import RidgeRegressor, LassoRegressor
-from part1.cross_validation   import compare_models_cv
-from part1.residual_analysis  import residual_plots
-
-# ══════════════════════════════════════════════════════════════════════
-# 0. HẰNG SỐ CẤU HÌNH & HYPERPARAMETERS
-# ══════════════════════════════════════════════════════════════════════
-DATA_PATH    = os.path.join(_HERE, "data", "AmesHousing.csv")
-RANDOM_STATE = 42
-TEST_SIZE    = 0.20
-CV_K         = 5            # Số fold để Cross-Validation
-VIF_THRESH   = 10.0         # Ngưỡng VIF để loại đa cộng tuyến
-
-# Lưới không gian tìm kiếm siêu tham số λ (30 điểm log-spaced từ 10^-3 đến 10^4)
-LAM_GRID = list(np.logspace(-3, 4, 30))
-
-# Thư mục lưu biểu đồ
-FIGURE_DIR = os.path.join(_HERE, "figures")
-os.makedirs(FIGURE_DIR, exist_ok=True)
+from part2.cross_validation   import compare_models_cv
+from part2.residual_analysis  import residual_plots
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 1. HÀM TIỆN ÍCH ĐÁNH GIÁ & CHIA DỮ LIỆU
+# CLASS ModelComparison
 # ══════════════════════════════════════════════════════════════════════
-def _mae(y_true, y_pred):
-    return float(np.mean(np.abs(y_true - y_pred)))
-
-def _rmse(y_true, y_pred):
-    return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-
-def _r2(y_true, y_pred):
-    return float(compute_r2(y_true, y_pred))
-
-def evaluate(y_true: np.ndarray, y_pred: np.ndarray, label: str = "") -> dict:
-    """Tính toán và in các metric (MAE, RMSE, R²)."""
-    mae  = _mae(y_true, y_pred)
-    rmse = _rmse(y_true, y_pred)
-    r2   = _r2(y_true, y_pred)
-    if label:
-        print(f"  {label:<25} MAE = {mae:.4f} | RMSE = {rmse:.4f} | R² = {r2:.4f}")
-    return {"mae": mae, "rmse": rmse, "r2": r2, "label": label}
-
-def train_test_split_stratified(
-    X: pd.DataFrame,
-    y: pd.Series,
-    test_size: float = 0.2,
-    random_state: int = 42,
-) -> tuple:
+class ModelComparison:
     """
-    Tự code phân tầng (Stratified Split) dựa trên phân vị của target (y)
-    giúp phân phối giá nhà ở tập train/test tương đồng nhau.
+    So sánh Ridge và Lasso trên bộ dữ liệu Ames Housing.
+
+    Parameters
+    ----------
+    data_path    : str   — đường dẫn tới AmesHousing.csv
+    test_size    : float — tỉ lệ tập test (mặc định 0.20)
+    cv_k         : int   — số fold CV (mặc định 5)
+    vif_thresh   : float — ngưỡng VIF để loại cột (mặc định 10.0)
+    lam_grid     : list  — danh sách λ cần thử (mặc định log-spaced 30 điểm)
+    random_state : int   — seed reproducible (mặc định 42)
+    figure_dir   : str   — thư mục lưu biểu đồ
+
+    Workflow nhanh
+    --------------
+        mc = ModelComparison(data_path="data/AmesHousing.csv")
+        mc.run()                   # chạy toàn bộ pipeline
+        mc.summary()               # bảng so sánh
+        mc.plot_all()              # vẽ tất cả biểu đồ
     """
-    rng = np.random.default_rng(random_state)
-    n_bins = 5
-    bins   = pd.qcut(y, q=n_bins, labels=False, duplicates="drop")
-    
-    test_idx = []
-    for b in range(n_bins):
-        group = np.where(bins == b)[0]
-        n_test = max(1, int(len(group) * test_size))
-        chosen = rng.choice(group, size=n_test, replace=False)
-        test_idx.extend(chosen.tolist())
 
-    test_idx  = np.array(sorted(test_idx))
-    train_idx = np.setdiff1d(np.arange(len(y)), test_idx)
+    # ------------------------------------------------------------------
+    # KHỞI TẠO
+    # ------------------------------------------------------------------
+    def __init__(
+        self,
+        data_path    : str   = os.path.join(_HERE, "data", "AmesHousing.csv"),
+        test_size    : float = 0.20,
+        cv_k         : int   = 5,
+        vif_thresh   : float = 10.0,
+        lam_grid     : list  = None,
+        random_state : int   = 42,
+        figure_dir   : str   = os.path.join(_HERE, "figures"),
+    ):
+        self.data_path    = data_path
+        self.test_size    = test_size
+        self.cv_k         = cv_k
+        self.vif_thresh   = vif_thresh
+        self.lam_grid     = lam_grid or list(np.logspace(-3, 4, 30))
+        self.random_state = random_state
+        self.figure_dir   = figure_dir
+        os.makedirs(self.figure_dir, exist_ok=True)
 
-    X_arr = X.values if isinstance(X, pd.DataFrame) else X
-    y_arr = y.values if isinstance(y, pd.Series)    else y
+        # Các thuộc tính được gán sau khi chạy run()
+        self.pipe           : DataPipeline = None
+        self.X_train        : pd.DataFrame = None
+        self.X_test         : pd.DataFrame = None
+        self.y_train        : np.ndarray   = None
+        self.y_test         : np.ndarray   = None
+        self.results        : dict         = {}   # {"ridge": {...}, "lasso": {...}}
+        self.cv_full        : dict         = {}   # output đầy đủ từ compare_models_cv
+        self._fitted        : bool         = False
 
-    return (
-        pd.DataFrame(X_arr[train_idx], columns=X.columns),
-        pd.DataFrame(X_arr[test_idx],  columns=X.columns),
-        pd.Series(y_arr[train_idx], name=y.name),
-        pd.Series(y_arr[test_idx],  name=y.name),
-    )
+    # ------------------------------------------------------------------
+    # TIỆN ÍCH NỘI BỘ
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _mae(y_true, y_pred):
+        return float(np.mean(np.abs(y_true - y_pred)))
 
+    @staticmethod
+    def _rmse(y_true, y_pred):
+        return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
 
-# ══════════════════════════════════════════════════════════════════════
-# 2. XÂY DỰNG MÔ HÌNH RIDGE & LASSO
-# ══════════════════════════════════════════════════════════════════════
-def build_regularized_models(
-    X_train: pd.DataFrame,
-    y_train: np.ndarray,
-    X_test: pd.DataFrame,
-    y_test: np.ndarray,
-) -> dict:
-    """
-    Chạy Cross-Validation để tìm λ tốt nhất cho Ridge và Lasso.
-    Huấn luyện mô hình cuối cùng trên toàn bộ tập train và đánh giá trên tập test.
-    """
-    results = {}
-    X_tr = X_train.values
-    X_te = X_test.values
-    y_tr = y_train.ravel() if hasattr(y_train, "ravel") else np.array(y_train)
-    y_te = y_test.ravel()  if hasattr(y_test,  "ravel") else np.array(y_test)
+    @staticmethod
+    def _r2(y_true, y_pred):
+        return float(compute_r2(y_true, y_pred))
 
-    print("\n── 5-FOLD CROSS VALIDATION (TÌM λ TỐI ƯU) ───────────────────────")
-    print(f"  Đang dò tìm trên lưới {len(LAM_GRID)} giá trị λ...")
-    
-    cv_result = compare_models_cv(
-        X_tr, y_tr,
-        k=CV_K,
-        lam_grid=LAM_GRID,
-        random_state=RANDOM_STATE,
-    )
+    def _evaluate(self, y_true, y_pred, label="") -> dict:
+        mae  = self._mae(y_true, y_pred)
+        rmse = self._rmse(y_true, y_pred)
+        r2   = self._r2(y_true, y_pred)
+        if label:
+            print(f"  {label:<35}  MAE={mae:.4f}  RMSE={rmse:.4f}  R²={r2:.4f}")
+        return {"mae": mae, "rmse": rmse, "r2": r2, "label": label}
 
-    # ── MÔ HÌNH 1: RIDGE REGRESSION
-    best_lam_ridge = cv_result["best_lam_ridge"]
-    print(f"\n  [Ridge] Đã tìm thấy λ* = {best_lam_ridge:.4f} (CV MSE: {cv_result['best_ridge']['cv_mse']:.4f})")
-    
-    ridge = RidgeRegressor(lam=best_lam_ridge, fit_intercept=True).fit(X_tr, y_tr)
-    pred_r = ridge.predict(X_te)
-    m_ridge = evaluate(y_te, pred_r, f"Ridge (λ={best_lam_ridge:.4f})")
+    def _savefig(self, fig, filename: str):
+        path = os.path.join(self.figure_dir, filename)
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        print(f"  [Saved] {path}")
 
-    results["ridge"] = {
-        "model"        : ridge,
-        "metrics"      : m_ridge,
-        "cv_result"    : cv_result["best_ridge"],
-        "lam"          : best_lam_ridge,
-        "feature_names": list(X_train.columns),
-        "all_cv"       : cv_result["ridge_results"],
-    }
+    # ------------------------------------------------------------------
+    # BƯỚC 1: ĐỌC & LÀM SẠCH
+    # ------------------------------------------------------------------
+    def load_and_clean(self) -> pd.DataFrame:
+        """Đọc CSV gốc và chạy clean_data pipeline."""
+        print("=" * 62)
+        print("BƯỚC 1: ĐỌC & LÀM SẠCH DỮ LIỆU")
+        print("=" * 62)
+        df = clean_data(self.data_path)
+        print(f"\n  Shape sau clean_data: {df.shape}")
+        return df
 
-    # ── MÔ HÌNH 2: LASSO REGRESSION
-    best_lam_lasso = cv_result["best_lam_lasso"]
-    print(f"\n  [Lasso] Đã tìm thấy λ* = {best_lam_lasso:.4f} (CV MSE: {cv_result['best_lasso']['cv_mse']:.4f})")
-    
-    lasso = LassoRegressor(lam=best_lam_lasso, fit_intercept=True).fit(X_tr, y_tr)
-    pred_l = lasso.predict(X_te)
-    m_lasso = evaluate(y_te, pred_l, f"Lasso (λ={best_lam_lasso:.4f})")
-    
-    # Tính số biến thực sự được Lasso giữ lại (hệ số khác 0)
-    n_nonzero = int(np.sum(np.abs(lasso.coef_[1:]) > 1e-6))
-    print(f"  [Lasso] Thu gọn mô hình: giữ lại {n_nonzero} / {len(X_train.columns)} biến.")
+    # ------------------------------------------------------------------
+    # BƯỚC 2: TRAIN/TEST SPLIT (stratified theo quantile SalePrice)
+    # ------------------------------------------------------------------
+    def split(self, X: pd.DataFrame, y: pd.Series):
+        """
+        Phân tầng đơn giản theo quantile y.
+        Không dùng sklearn để giữ tinh thần tự cài đặt của đồ án.
+        """
+        print("\n" + "=" * 62)
+        print("BƯỚC 2: TRAIN/TEST SPLIT (80/20, stratified)")
+        print("=" * 62)
+        rng    = np.random.default_rng(self.random_state)
+        n_bins = 5
+        bins   = pd.qcut(y, q=n_bins, labels=False, duplicates="drop")
+        test_idx = []
+        for b in range(n_bins):
+            group  = np.where(bins == b)[0]
+            n_test = max(1, int(len(group) * self.test_size))
+            test_idx.extend(rng.choice(group, size=n_test, replace=False).tolist())
 
-    results["lasso"] = {
-        "model"        : lasso,
-        "metrics"      : m_lasso,
-        "cv_result"    : cv_result["best_lasso"],
-        "lam"          : best_lam_lasso,
-        "feature_names": list(X_train.columns),
-        "all_cv"       : cv_result["lasso_results"],
-    }
+        test_idx  = np.array(sorted(test_idx))
+        train_idx = np.setdiff1d(np.arange(len(y)), test_idx)
 
-    results["cv_full"] = cv_result
-    results["lam_grid"] = LAM_GRID
+        X_arr, y_arr = X.values, y.values
+        X_tr = pd.DataFrame(X_arr[train_idx], columns=X.columns)
+        X_te = pd.DataFrame(X_arr[test_idx],  columns=X.columns)
+        y_tr = pd.Series(y_arr[train_idx], name=y.name)
+        y_te = pd.Series(y_arr[test_idx],  name=y.name)
 
-    return results
+        print(f"  Train: {X_tr.shape}  |  Test: {X_te.shape}")
+        return X_tr, X_te, y_tr, y_te
 
+    # ------------------------------------------------------------------
+    # BƯỚC 3: TIỀN XỬ LÝ (DataPipeline)
+    # ------------------------------------------------------------------
+    def preprocess(self, X_train_raw, X_test_raw, y_train_raw, y_test_raw):
+        """Fit pipeline trên train, transform cả hai tập."""
+        print("\n" + "=" * 62)
+        print("BƯỚC 3: TIỀN XỬ LÝ (DataPipeline)")
+        print("=" * 62)
+        self.pipe = DataPipeline(
+            outlier_method      = "winsorize",
+            outlier_threshold   = 0.02,
+            encoding            = "auto",
+            scale               = True,
+            drop_first          = True,
+            log_target          = True,   # log1p(SalePrice)
+            engineer_features   = True,
+            log_skewed_features = True,
+            add_interactions    = True,
+        )
+        X_train, y_train = self.pipe.fit_transform(X_train_raw, y_train_raw)
+        X_test           = self.pipe.transform(X_test_raw)
+        y_test           = np.log1p(y_test_raw.values)   # đồng nhất với y_train
+        y_train_np       = y_train.values if hasattr(y_train, "values") else np.array(y_train)
 
-# ══════════════════════════════════════════════════════════════════════
-# 3. TỔNG HỢP VÀ CHỌN MÔ HÌNH TỐT NHẤT
-# ══════════════════════════════════════════════════════════════════════
-def summary_table(results: dict) -> pd.DataFrame:
-    """Lập bảng so sánh 2 mô hình trên tập test và xác định mô hình vô địch."""
-    rows = []
-    keys = ["ridge", "lasso"]
-    display_names = {
-        "ridge": f"Ridge (λ={results['ridge']['lam']:.4f})",
-        "lasso": f"Lasso (λ={results['lasso']['lam']:.4f})",
-    }
-    
-    for k in keys:
-        m = results[k]["metrics"]
-        rows.append({
-            "Mô hình" : display_names[k],
-            "MAE"     : round(m["mae"],  4),
-            "RMSE"    : round(m["rmse"], 4),
-            "R²"      : round(m["r2"],   4),
-        })
+        print(f"\n  Shape: Train {X_train.shape} | Test {X_test.shape}")
+        return X_train, X_test, y_train_np, y_test
 
-    df_cmp = pd.DataFrame(rows).set_index("Mô hình")
+    # ------------------------------------------------------------------
+    # BƯỚC 4: LOẠI ĐA CỘNG TUYẾN (VIF)
+    # ------------------------------------------------------------------
+    def remove_multicollinearity(self, X_train: pd.DataFrame, X_test: pd.DataFrame):
+        """Iterative VIF — loại cột cho đến khi VIF ≤ vif_thresh."""
+        print("\n" + "=" * 62)
+        print(f"BƯỚC 4: LOẠI ĐA CỘNG TUYẾN (VIF > {self.vif_thresh})")
+        print("=" * 62)
+        X_train_vif, dropped = self.pipe.drop_high_vif(X_train, threshold=self.vif_thresh)
+        X_test_vif  = X_test.drop(columns=dropped, errors="ignore")
+        print(f"  Shape sau VIF: Train {X_train_vif.shape} | Test {X_test_vif.shape}")
+        return X_train_vif, X_test_vif
 
-    print("\n" + "═" * 60)
-    print(" BẢNG SO SÁNH HIỆU SUẤT TRÊN TẬP TEST")
-    print("═" * 60)
-    print(df_cmp.to_string())
-    print("═" * 60)
+    # ------------------------------------------------------------------
+    # BƯỚC 5: CHỌN λ QUA CV VÀ FIT MÔ HÌNH
+    # ------------------------------------------------------------------
+    def fit(self):
+        """
+        Chọn λ tốt nhất cho Ridge và Lasso qua k-fold CV,
+        sau đó fit mô hình cuối trên toàn bộ tập train.
 
-    # Chọn mô hình có RMSE nhỏ nhất
-    best_key = min(keys, key=lambda k: results[k]["metrics"]["rmse"])
-    print(f"\n🏆 MÔ HÌNH TỐT NHẤT: {display_names[best_key]}")
-    
-    return df_cmp, best_key
+        Kết quả lưu vào self.results["ridge"] và self.results["lasso"].
+        """
+        self._check_fitted(require=False)
+        print("\n" + "=" * 62)
+        print(f"BƯỚC 5: CHỌN λ QUA {self.cv_k}-FOLD CV VÀ FIT MÔ HÌNH")
+        print("=" * 62)
 
+        X_tr = self.X_train.values
+        y_tr = self.y_train.ravel()
 
-# ══════════════════════════════════════════════════════════════════════
-# 4. HÀM TRỰC QUAN HÓA (VISUALIZATION)
-# ══════════════════════════════════════════════════════════════════════
-def plot_cv_lambda(results: dict, save: bool = True):
-    """Vẽ đường cong Cross-Validation MSE theo sự thay đổi của λ."""
-    lam_grid  = np.array(results["lam_grid"])
-    ridge_mse = [r["cv_mse"] for r in results["ridge"]["all_cv"]]
-    lasso_mse = [r["cv_mse"] for r in results["lasso"]["all_cv"]]
+        print(f"  Lưới λ: {len(self.lam_grid)} điểm "
+              f"[{self.lam_grid[0]:.2e} … {self.lam_grid[-1]:.2e}]")
+        self.cv_full = compare_models_cv(
+            X_tr, y_tr,
+            k            = self.cv_k,
+            lam_grid     = self.lam_grid,
+            random_state = self.random_state,
+        )
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    fig.suptitle("Cross-Validation MSE vs Lambda (λ)", fontsize=14, fontweight="bold")
+        # ── Ridge ──────────────────────────────────────────────────
+        best_lam_r = self.cv_full["best_lam_ridge"]
+        print(f"\n  Ridge — λ* = {best_lam_r:.6f}  "
+              f"(CV MSE = {self.cv_full['best_ridge']['cv_mse']:.4f})")
+        ridge = RidgeRegressor(lam=best_lam_r, fit_intercept=True).fit(X_tr, y_tr)
+        pred_r = ridge.predict(self.X_test.values)
+        m_r = self._evaluate(self.y_test, pred_r, f"Ridge (λ={best_lam_r:.4f})")
 
-    configs = zip(
-        axes, 
-        [ridge_mse, lasso_mse], 
-        [results["ridge"]["lam"], results["lasso"]["lam"]],
-        ["Ridge Regression", "Lasso Regression"],
-        ["royalblue", "firebrick"]
-    )
+        self.results["ridge"] = {
+            "model"        : ridge,
+            "lam"          : best_lam_r,
+            "metrics"      : m_r,
+            "cv_result"    : self.cv_full["best_ridge"],
+            "all_cv"       : self.cv_full["ridge_results"],
+            "feature_names": list(self.X_train.columns),
+            "y_pred"       : pred_r,
+        }
 
-    for ax, mse_vals, lam_best, title, color in configs:
-        ax.semilogx(lam_grid, mse_vals, color=color, lw=2, marker="o", markersize=4, label="CV MSE")
-        ax.axvline(lam_best, color="black", linestyle="--", label=f"λ tối ưu = {lam_best:.4f}")
-        ax.set_xlabel("Giá trị λ (log scale)", fontsize=11)
-        ax.set_ylabel("Mean Squared Error (CV)", fontsize=11)
-        ax.set_title(title, fontsize=12, fontweight="bold")
-        ax.legend(fontsize=10)
+        # ── Lasso ──────────────────────────────────────────────────
+        best_lam_l = self.cv_full["best_lam_lasso"]
+        print(f"\n  Lasso — λ* = {best_lam_l:.6f}  "
+              f"(CV MSE = {self.cv_full['best_lasso']['cv_mse']:.4f})")
+        lasso = LassoRegressor(lam=best_lam_l, fit_intercept=True).fit(X_tr, y_tr)
+        pred_l = lasso.predict(self.X_test.values)
+        m_l = self._evaluate(self.y_test, pred_l, f"Lasso (λ={best_lam_l:.4f})")
+
+        n_nonzero = int(np.sum(np.abs(lasso.coef_[1:]) > 1e-6))
+        print(f"  Lasso: {n_nonzero}/{len(self.X_train.columns)} hệ số ≠ 0 "
+              f"(sparsity {100*(1 - n_nonzero/len(self.X_train.columns)):.1f}%)")
+
+        self.results["lasso"] = {
+            "model"        : lasso,
+            "lam"          : best_lam_l,
+            "metrics"      : m_l,
+            "cv_result"    : self.cv_full["best_lasso"],
+            "all_cv"       : self.cv_full["lasso_results"],
+            "feature_names": list(self.X_train.columns),
+            "y_pred"       : pred_l,
+            "n_nonzero"    : n_nonzero,
+        }
+
+        self._fitted = True
+
+    # ------------------------------------------------------------------
+    # RUN — chạy toàn bộ pipeline
+    # ------------------------------------------------------------------
+    def run(self):
+        """
+        Chạy đầy đủ pipeline:
+          load_and_clean → split → preprocess → remove_multicollinearity → fit
+        """
+        sns.set_theme(style="whitegrid")
+
+        df = self.load_and_clean()
+        y  = df["SalePrice"]
+        X  = df.drop(columns=["SalePrice"])
+
+        X_tr_raw, X_te_raw, y_tr_raw, y_te_raw = self.split(X, y)
+
+        X_tr, X_te, y_tr, y_te = self.preprocess(
+            X_tr_raw, X_te_raw, y_tr_raw, y_te_raw
+        )
+        X_tr_vif, X_te_vif = self.remove_multicollinearity(X_tr, X_te)
+
+        self.X_train = X_tr_vif
+        self.X_test  = X_te_vif
+        self.y_train = y_tr
+        self.y_test  = y_te
+
+        self.fit()
+        return self
+
+    # ------------------------------------------------------------------
+    # BẢNG TỔNG HỢP
+    # ------------------------------------------------------------------
+    def summary(self) -> pd.DataFrame:
+        """In và trả về bảng so sánh MAE / RMSE / R² trên test set."""
+        self._check_fitted()
+        rows = []
+        for key in ["ridge", "lasso"]:
+            r = self.results[key]
+            row = {
+                "Mô hình": f"{key.capitalize()} (λ={r['lam']:.4f})",
+                "λ*"     : round(r["lam"], 6),
+                "CV MSE" : round(r["cv_result"]["cv_mse"],  4),
+                "MAE"    : round(r["metrics"]["mae"],  4),
+                "RMSE"   : round(r["metrics"]["rmse"], 4),
+                "R²"     : round(r["metrics"]["r2"],   4),
+            }
+            if key == "lasso":
+                row["Hệ số ≠ 0"] = r["n_nonzero"]
+            rows.append(row)
+
+        df_cmp = pd.DataFrame(rows).set_index("Mô hình")
+        print("\n" + "═" * 70)
+        print("BẢNG SO SÁNH RIDGE vs LASSO TRÊN TẬP TEST")
+        print("═" * 70)
+        print(df_cmp.to_string())
+        print("═" * 70)
+
+        best = min(["ridge", "lasso"],
+                   key=lambda k: self.results[k]["metrics"]["rmse"])
+        print(f"\n✓ Mô hình tốt nhất (RMSE thấp nhất): {best.capitalize()}")
+        self._best_key = best
+        return df_cmp
+
+    # ------------------------------------------------------------------
+    # BIỂU ĐỒ
+    # ------------------------------------------------------------------
+    def plot_cv_lambda(self, save: bool = True) -> plt.Figure:
+        """CV MSE theo λ cho Ridge và Lasso (2 panel)."""
+        self._check_fitted()
+        lam_grid  = np.array(self.lam_grid)
+        ridge_mse = [r["cv_mse"] for r in self.results["ridge"]["all_cv"]]
+        lasso_mse = [r["cv_mse"] for r in self.results["lasso"]["all_cv"]]
+
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+        fig.suptitle("Cross-Validation MSE theo λ", fontsize=14, fontweight="bold")
+
+        cfg = [
+            (axes[0], ridge_mse, self.results["ridge"]["lam"], "Ridge", "royalblue"),
+            (axes[1], lasso_mse, self.results["lasso"]["lam"], "Lasso", "firebrick"),
+        ]
+        for ax, mse_vals, lam_best, title, color in cfg:
+            ax.semilogx(lam_grid, mse_vals, color=color, lw=2,
+                        marker="o", markersize=4, label="CV MSE")
+            ax.axvline(lam_best, color="black", linestyle="--",
+                       label=f"λ* = {lam_best:.4f}")
+            ax.set_xlabel("λ (log scale)", fontsize=11)
+            ax.set_ylabel("CV MSE", fontsize=11)
+            ax.set_title(f"{title} Regression", fontsize=12, fontweight="bold")
+            ax.legend(fontsize=10)
+            ax.grid(True, alpha=0.4)
+
+        plt.tight_layout()
+        if save:
+            self._savefig(fig, "cv_lambda_curve.png")
+        return fig
+
+    def plot_lasso_coef_path(self, top_n: int = 10, save: bool = True) -> plt.Figure:
+        """
+        Lasso coefficient path: hệ số từng feature theo λ.
+        Trực quan hóa quá trình các hệ số co dần về 0.
+        """
+        self._check_fitted()
+        feat_names = self.results["lasso"]["feature_names"]
+        X_tr = self.X_train.values
+        y_tr = self.y_train.ravel()
+
+        coef_matrix = []
+        for lam in self.lam_grid:
+            m = LassoRegressor(lam=lam, fit_intercept=True).fit(X_tr, y_tr)
+            c = m.coef_[1:] if len(m.coef_) == len(feat_names) + 1 else m.coef_
+            coef_matrix.append(c)
+        coef_matrix = np.array(coef_matrix)   # (n_lam, n_feat)
+
+        top_idx = np.argsort(np.abs(coef_matrix[0]))[-top_n:]
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        for i in top_idx:
+            ax.semilogx(self.lam_grid, coef_matrix[:, i],
+                        label=feat_names[i], lw=1.5)
+        ax.axhline(0, color="black", lw=0.8, linestyle="--")
+        ax.axvline(self.results["lasso"]["lam"], color="grey",
+                   linestyle=":", lw=1.2, label=f"λ* = {self.results['lasso']['lam']:.4f}")
+        ax.set_xlabel("λ (log scale)", fontsize=11)
+        ax.set_ylabel("Hệ số hồi quy", fontsize=11)
+        ax.set_title(f"Lasso Coefficient Path — Top {top_n} features",
+                     fontsize=12, fontweight="bold")
+        ax.legend(fontsize=8, loc="center right", bbox_to_anchor=(1.19, 0.5))
         ax.grid(True, alpha=0.4)
+        plt.tight_layout()
+        if save:
+            self._savefig(fig, "lasso_coef_path.png")
+        return fig
 
-    plt.tight_layout()
-    if save:
-        path = os.path.join(FIGURE_DIR, "cv_lambda_curve.png")
-        plt.savefig(path, dpi=150, bbox_inches="tight")
-        print(f"  [Đã lưu] {path}")
+    def plot_ridge_trace(self, top_n: int = 10, save: bool = True) -> plt.Figure:
+        """
+        Ridge trace: hệ số shrinkage theo λ.
+        Khác Lasso — hệ số co dần về 0 nhưng không bằng 0 hẳn.
+        """
+        self._check_fitted()
+        feat_names = self.results["ridge"]["feature_names"]
+        X_tr = self.X_train.values
+        y_tr = self.y_train.ravel()
 
-def plot_feature_importance(results: dict, best_key: str, top_n: int = 20, save: bool = True):
-    """Trực quan hóa top các biến có hệ số hồi quy lớn nhất (tác động mạnh nhất)."""
-    model = results[best_key]["model"]
-    feat  = results[best_key]["feature_names"]
+        coef_matrix = []
+        for lam in self.lam_grid:
+            m = RidgeRegressor(lam=lam, fit_intercept=True).fit(X_tr, y_tr)
+            c = m.coef_[1:] if len(m.coef_) == len(feat_names) + 1 else m.coef_
+            coef_matrix.append(c)
+        coef_matrix = np.array(coef_matrix)
 
-    # Bỏ phần tử đầu tiên nếu nó là hệ số tự do (intercept)
-    coef = model.coef_[1:] if len(model.coef_) == len(feat) + 1 else model.coef_
+        top_idx = np.argsort(np.abs(coef_matrix[0]))[-top_n:]
 
-    df_coef = pd.DataFrame({"feature": feat, "coef": coef})
-    df_coef["abs_coef"] = df_coef["coef"].abs()
-    
-    # Lấy top N biến ảnh hưởng lớn nhất
-    df_top = df_coef.nlargest(top_n, "abs_coef").sort_values("coef")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        for i in top_idx:
+            ax.semilogx(self.lam_grid, coef_matrix[:, i],
+                        label=feat_names[i], lw=1.5)
+        ax.axhline(0, color="black", lw=0.8, linestyle="--")
+        ax.axvline(self.results["ridge"]["lam"], color="grey",
+                   linestyle=":", lw=1.2, label=f"λ* = {self.results['ridge']['lam']:.4f}")
+        ax.set_xlabel("λ (log scale)", fontsize=11)
+        ax.set_ylabel("Hệ số hồi quy", fontsize=11)
+        ax.set_title(f"Ridge Trace — Top {top_n} features",
+                     fontsize=12, fontweight="bold")
+        ax.legend(fontsize=8, loc="center right", bbox_to_anchor=(1.19, 0.5))
+        ax.grid(True, alpha=0.4)
+        plt.tight_layout()
+        if save:
+            self._savefig(fig, "ridge_trace.png")
+        return fig
 
-    colors = ["firebrick" if c < 0 else "steelblue" for c in df_top["coef"]]
-    fig, ax = plt.subplots(figsize=(10, max(5, top_n * 0.35)))
-    
-    ax.barh(df_top["feature"], df_top["coef"], color=colors, edgecolor="k", linewidth=0.5)
-    ax.axvline(0, color="black", linewidth=1)
-    ax.set_xlabel("Trọng số (Hệ số hồi quy đã chuẩn hóa)", fontsize=11)
-    ax.set_title(
-        f"Top {top_n} Biến Quan Trọng Nhất — {results[best_key]['metrics']['label']}",
-        fontsize=12, fontweight="bold"
-    )
-    ax.grid(True, axis="x", alpha=0.4)
-    plt.tight_layout()
-    
-    if save:
-        path = os.path.join(FIGURE_DIR, "feature_importance.png")
-        plt.savefig(path, dpi=150, bbox_inches="tight")
-        print(f"  [Đã lưu] {path}")
+    def plot_feature_importance(
+        self, model_key: str = None, top_n: int = 20, save: bool = True
+    ) -> plt.Figure:
+        """
+        Horizontal bar chart hệ số hồi quy (đã chuẩn hóa) của Ridge hoặc Lasso.
 
-def plot_actual_vs_predicted(y_true: np.ndarray, y_pred: np.ndarray, label: str = "", save: bool = True):
-    """Vẽ biểu đồ phân tán so sánh giá dự đoán và giá trị thực tế."""
-    fig, ax = plt.subplots(figsize=(6, 6))
-    ax.scatter(y_true, y_pred, alpha=0.6, edgecolors="white", linewidths=0.5, color="steelblue", s=30)
-    
-    # Đường chéo y = x
-    lims = [min(y_true.min(), y_pred.min()), max(y_true.max(), y_pred.max())]
-    ax.plot(lims, lims, "r--", lw=1.5, label="Đường y = ŷ (Hoàn hảo)")
-    
-    ax.set_xlabel("Giá trị thực tế (log1p SalePrice)", fontsize=11)
-    ax.set_ylabel("Giá trị dự đoán (log1p SalePrice)", fontsize=11)
-    ax.set_title(f"Thực tế vs Dự đoán — {label}", fontsize=12, fontweight="bold")
-    ax.legend()
-    ax.grid(True, alpha=0.4)
-    plt.tight_layout()
-    
-    if save:
-        path = os.path.join(FIGURE_DIR, "actual_vs_predicted.png")
-        plt.savefig(path, dpi=150, bbox_inches="tight")
-        print(f"  [Đã lưu] {path}")
+        Parameters
+        ----------
+        model_key : "ridge" | "lasso" | None — None → dùng mô hình tốt nhất
+        """
+        self._check_fitted()
+        key   = model_key or getattr(self, "_best_key", "ridge")
+        model = self.results[key]["model"]
+        feat  = self.results[key]["feature_names"]
 
-def plot_lasso_coef_path(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    feature_names: list,
-    lam_grid: list,
-    top_n: int = 10,
-    save: bool = True,
-):
-    """Vẽ quá trình các hệ số Lasso bị co rút về 0 khi λ tăng."""
-    coef_matrix = []
-    for lam in lam_grid:
-        m = LassoRegressor(lam=lam, fit_intercept=True).fit(X_train, y_train)
-        c = m.coef_[1:] if len(m.coef_) == len(feature_names) + 1 else m.coef_
-        coef_matrix.append(c)
+        coef = model.coef_
+        if len(coef) == len(feat) + 1:
+            coef = coef[1:]   # bỏ intercept
 
-    coef_matrix = np.array(coef_matrix) # shape (n_lam, n_feat)
+        df_coef = (
+            pd.DataFrame({"feature": feat, "coef": coef})
+            .assign(abs_coef=lambda d: d["coef"].abs())
+            .nlargest(top_n, "abs_coef")
+            .sort_values("coef")
+        )
 
-    # Chọn top biến có hệ số tuyệt đối lớn nhất ở mức λ nhỏ (ít penalty)
-    abs_at_small = np.abs(coef_matrix[0])
-    top_idx = np.argsort(abs_at_small)[-top_n:]
+        colors = ["firebrick" if c < 0 else "steelblue" for c in df_coef["coef"]]
+        fig, ax = plt.subplots(figsize=(9, max(5, top_n * 0.38)))
+        ax.barh(df_coef["feature"], df_coef["coef"],
+                color=colors, edgecolor="k", linewidth=0.4)
+        ax.axvline(0, color="black", linewidth=0.8)
+        ax.set_xlabel("Hệ số hồi quy (đã chuẩn hóa z-score)", fontsize=11)
+        ax.set_title(
+            f"Top {top_n} Feature Importance — {key.capitalize()} "
+            f"(λ={self.results[key]['lam']:.4f})",
+            fontsize=12, fontweight="bold",
+        )
+        ax.grid(True, axis="x", alpha=0.4)
+        plt.tight_layout()
+        if save:
+            self._savefig(fig, f"feature_importance_{key}.png")
+        return fig
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    for i in top_idx:
-        ax.semilogx(lam_grid, coef_matrix[:, i], label=feature_names[i], lw=1.8)
-    
-    ax.axhline(0, color="black", lw=1, linestyle="--")
-    ax.set_xlabel("Giá trị λ (log scale)", fontsize=11)
-    ax.set_ylabel("Hệ số hồi quy", fontsize=11)
-    ax.set_title(f"Đường co rút hệ số Lasso (Lasso Path) — Top {top_n} biến", fontsize=12, fontweight="bold")
-    
-    # Dời legend ra ngoài để không che biểu đồ
-    ax.legend(fontsize=9, loc="center right", bbox_to_anchor=(1.25, 0.5))
-    ax.grid(True, alpha=0.4)
-    plt.tight_layout()
-    
-    if save:
-        path = os.path.join(FIGURE_DIR, "lasso_coef_path.png")
-        plt.savefig(path, dpi=150, bbox_inches="tight")
-        print(f"  [Đã lưu] {path}")
+    def plot_actual_vs_predicted(
+        self, model_key: str = None, save: bool = True
+    ) -> plt.Figure:
+        """Scatter: giá trị thực vs dự đoán (log SalePrice)."""
+        self._check_fitted()
+        key    = model_key or getattr(self, "_best_key", "ridge")
+        y_pred = self.results[key]["y_pred"]
+        y_true = self.y_test
+        label  = self.results[key]["metrics"]["label"]
 
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.scatter(y_true, y_pred, alpha=0.5, edgecolors="k",
+                   linewidths=0.3, color="steelblue", s=25)
+        lims = [min(y_true.min(), y_pred.min()),
+                max(y_true.max(), y_pred.max())]
+        ax.plot(lims, lims, "r--", lw=1.5, label="y = ŷ")
+        ax.set_xlabel("Giá trị thực (log SalePrice)", fontsize=11)
+        ax.set_ylabel("Giá trị dự đoán (log SalePrice)", fontsize=11)
+        ax.set_title(f"Actual vs Predicted — {label}",
+                     fontsize=12, fontweight="bold")
+        ax.legend()
+        ax.grid(True, alpha=0.4)
+        plt.tight_layout()
+        if save:
+            self._savefig(fig, f"actual_vs_predicted_{key}.png")
+        return fig
 
-# ══════════════════════════════════════════════════════════════════════
-# 5. PIPELINE CHÍNH (MAIN EXECUTION)
-# ══════════════════════════════════════════════════════════════════════
-def run_model_comparison(data_path: str = DATA_PATH) -> dict:
-    """Chạy toàn bộ pipeline xử lý, huấn luyện và đánh giá mô hình."""
-    sns.set_theme(style="whitegrid")
+    def plot_residuals(self, model_key: str = None, save: bool = True):
+        """4 biểu đồ phân tích phần dư (dùng residual_analysis.py từ Part 1)."""
+        self._check_fitted()
+        key   = model_key or getattr(self, "_best_key", "ridge")
+        model = self.results[key]["model"]
 
-    print("=" * 60)
-    print(" BƯỚC 1: ĐỌC VÀ LÀM SẠCH DỮ LIỆU (CLEAN DATA)")
-    print("=" * 60)
-    df = clean_data(data_path)
-    print(f"  ✓ Kích thước sau khi clean: {df.shape}")
+        try:
+            fig, axes = residual_plots(
+                self.X_test.values, self.y_test, model.coef_
+            )
+            if save:
+                self._savefig(fig, f"residual_analysis_{key}.png")
+            return fig, axes
+        except Exception as e:
+            print(f"  [CẢNH BÁO] Không vẽ được residual analysis: {e}")
+            return None, None
 
-    print("\n" + "=" * 60)
-    print(" BƯỚC 2: TRAIN/TEST SPLIT (80/20 STRATIFIED)")
-    print("=" * 60)
-    y = df["SalePrice"]
-    X = df.drop(columns=["SalePrice"])
+    def plot_all(self, save: bool = True):
+        """Vẽ toàn bộ biểu đồ: CV curve, traces, importance, scatter, residuals."""
+        self._check_fitted()
+        print("\n" + "=" * 62)
+        print("VẼ BIỂU ĐỒ")
+        print("=" * 62)
+        self.plot_cv_lambda(save=save)
+        self.plot_ridge_trace(save=save)
+        self.plot_lasso_coef_path(save=save)
+        self.plot_feature_importance("ridge", save=save)
+        self.plot_feature_importance("lasso", save=save)
+        self.plot_actual_vs_predicted("ridge", save=save)
+        self.plot_actual_vs_predicted("lasso", save=save)
+        self.plot_residuals(save=save)
+        plt.close("all")
+        print(f"\n  Tất cả biểu đồ đã lưu vào: {self.figure_dir}")
 
-    X_train_raw, X_test_raw, y_train_raw, y_test_raw = train_test_split_stratified(
-        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE
-    )
-    print(f"  ✓ Kích thước Train: {X_train_raw.shape}")
-    print(f"  ✓ Kích thước Test : {X_test_raw.shape}")
+    # ------------------------------------------------------------------
+    # KIỂM TRA TRẠNG THÁI
+    # ------------------------------------------------------------------
+    def _check_fitted(self, require: bool = True):
+        if require and not self._fitted:
+            raise RuntimeError("Gọi .run() hoặc .fit() trước.")
 
-    print("\n" + "=" * 60)
-    print(" BƯỚC 3: TIỀN XỬ LÝ (DATA PIPELINE)")
-    print("=" * 60)
-    pipe = DataPipeline(
-        outlier_method       = "winsorize",
-        outlier_threshold    = 0.02,   # Chặn giá trị ngoại lai ở biên 2%
-        encoding             = "auto",
-        scale                = True,
-        drop_first           = True,
-        log_target           = True,   # Lấy log1p cho y để phân phối chuẩn hơn
-        engineer_features    = True,
-        log_skewed_features  = True,
-        add_interactions     = True,
-    )
-    
-    X_train, y_train = pipe.fit_transform(X_train_raw, y_train_raw)
-    X_test           = pipe.transform(X_test_raw)
+    # ------------------------------------------------------------------
+    # REPR
+    # ------------------------------------------------------------------
+    def __repr__(self) -> str:
+        status = "fitted" if self._fitted else "not fitted"
+        return (f"ModelComparison(cv_k={self.cv_k}, vif_thresh={self.vif_thresh}, "
+                f"lam_grid=[{len(self.lam_grid)} pts], status={status})")
 
-    # Đưa y_test về không gian log để đánh giá đồng nhất với mô hình
-    y_test = np.log1p(y_test_raw.values)
-    y_train_np = y_train.values if hasattr(y_train, "values") else np.array(y_train)
-
-    print(f"  ✓ Output Feature Matrix: Train {X_train.shape} | Test {X_test.shape}")
-
-    print("\n" + "=" * 60)
-    print(f" BƯỚC 4: LOẠI BỎ ĐA CỘNG TUYẾN (NGƯỠNG VIF = {VIF_THRESH})")
-    print("=" * 60)
-    X_train_vif, dropped_cols = pipe.drop_high_vif(X_train, threshold=VIF_THRESH)
-    X_test_vif = X_test.drop(columns=dropped_cols, errors="ignore")
-    print(f"  ✓ Output sau VIF: Train {X_train_vif.shape} | Test {X_test_vif.shape}")
-
-    print("\n" + "=" * 60)
-    print(" BƯỚC 5: HUẤN LUYỆN RIDGE & LASSO")
-    print("=" * 60)
-    results = build_regularized_models(X_train_vif, y_train_np, X_test_vif, y_test)
-
-    print("\n" + "=" * 60)
-    print(" BƯỚC 6 & 7: KẾT QUẢ VÀ TRỰC QUAN HÓA")
-    print("=" * 60)
-    
-    # 6.1 Lập bảng so sánh
-    summary_df, best_key = summary_table(results)
-
-    # 6.2 Vẽ biểu đồ
-    plot_cv_lambda(results)
-    
-    best_model  = results[best_key]["model"]
-    X_te_best   = X_test_vif.values
-    y_pred_best = best_model.predict(X_te_best)
-    
-    plot_actual_vs_predicted(y_test, y_pred_best, results[best_key]["metrics"]["label"])
-    plot_feature_importance(results, best_key, top_n=20)
-    plot_lasso_coef_path(X_train_vif.values, y_train_np, list(X_train_vif.columns), LAM_GRID, top_n=10)
-
-    # 6.3 Phân tích phần dư cho mô hình xuất sắc nhất
-    print("\n  Đang vẽ Residual Analysis cho mô hình vô địch...")
-    try:
-        fig_res, _ = residual_plots(X_te_best, y_test, best_model.coef_)
-        path_res = os.path.join(FIGURE_DIR, "residual_analysis_best.png")
-        fig_res.savefig(path_res, dpi=150, bbox_inches="tight")
-        print(f"  [Đã lưu] {path_res}")
-    except Exception as e:
-        print(f"  [Cảnh báo] Lỗi khi vẽ residual analysis từ module part2: {e}")
-
-    # Giải phóng bộ nhớ đồ họa
-    plt.close("all")
-
-    print("\n" + "★" * 60)
-    print(" HOÀN TẤT PIPELINE SO SÁNH!")
-    print(f" Toàn bộ biểu đồ phân tích đã được lưu vào: {FIGURE_DIR}")
-    print("★" * 60)
-
-    return {
-        "results"   : results,
-        "summary_df": summary_df,
-        "best_key"  : best_key,
-        "X_train"   : X_train_vif,
-        "X_test"    : X_test_vif,
-        "y_train"   : y_train_np,
-        "y_test"    : y_test,
-        "pipe"      : pipe,
-    }
 
