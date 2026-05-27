@@ -70,6 +70,7 @@ def _safe_model_metrics(y, y_hat, p):
     try:
         return model_metrics(y, y_hat, p=p, verbose=False)
     except ZeroDivisionError:
+        # Fallback: RSS = 0 gây chia 0 trong model_metrics, tính tay các chỉ số
         rss = float(np.sum((y - y_hat) ** 2))
         tss = float(np.sum((y - y.mean()) ** 2))
         ess = float(np.sum((y_hat - y.mean()) ** 2))
@@ -102,6 +103,7 @@ def ols_coefficient_table(X, y, feature_names=None):
     _check_xy_shape(X_df, y_arr)
 
     model = _fit_ols(X_df, y_arr)
+    # Tắt warning chia 0 khi sigma2 = 0 (fit hoàn hảo)
     with np.errstate(divide="ignore", invalid="ignore"):
         inference = coef_inference(
             X_df.to_numpy(),
@@ -125,275 +127,287 @@ def ols_coefficient_table(X, y, feature_names=None):
     )
 
 
-def backward_elimination_pvalue(
-    X,
-    y,
-    alpha=0.05,
-    min_features=1,
-    max_iter=None,
-    feature_names=None,
-    verbose=True,
-):
+class OLSFeatureSelector:
     """
-    Loại biến theo p-value bằng backward elimination.
+    Class hỗ trợ chọn biến OLS (Feature Selection) sử dụng p-value và VIF.
+    Thiết kế theo dạng hướng đối tượng để dễ dàng lưu trữ trạng thái và đánh giá mô hình.
 
-    Mỗi vòng lặp:
-      1. Fit OLS với tập biến hiện tại.
-      2. Lấy p-value của các biến giải thích, không tính Intercept.
-      3. Nếu p-value lớn nhất > alpha thì loại biến đó.
-      4. Dừng khi tất cả p-value <= alpha hoặc đã chạm min_features.
+    Parameters
+    ----------
+    method : str
+        'pvalue' = loại theo p-value, 'vif' = loại theo VIF, 'both' = VIF trước rồi p-value.
+    alpha : float
+        Ngưỡng p-value để giữ biến (mặc định 0.05).
+    vif_threshold : float
+        Ngưỡng VIF tối đa cho phép (mặc định 10.0).
+    min_features : int
+        Số biến tối thiểu phải giữ lại.
+    max_iter : int or None
+        Số vòng lặp tối đa. None = bằng số biến ban đầu.
+    verbose : bool
+        In chi tiết quá trình loại biến.
+
+    Attributes (sau khi fit)
+    ----------
+    selected_features_ : list[str]    - Tên các biến được giữ.
+    dropped_features_  : list[str]    - Tên các biến bị loại, theo thứ tự.
+    model_             : OLSRegressor - Mô hình OLS cuối cùng.
+    coef_table_        : DataFrame    - Bảng hệ số (coef, SE, t, p-value, CI).
+    metrics_           : dict         - Các chỉ số: R², R²-adj, F-stat, ...
+    vif_table_         : DataFrame    - Bảng VIF sau cùng (nếu có).
     """
-    if not (0 < alpha < 1):
-        raise ValueError("alpha phải nằm trong khoảng (0, 1).")
+    def __init__(self, method="both", alpha=0.05, vif_threshold=10.0, min_features=1, max_iter=None, verbose=True):
+        self.method = method
+        self.alpha = alpha
+        self.vif_threshold = vif_threshold
+        self.min_features = min_features
+        self.max_iter = max_iter
+        self.verbose = verbose
+        
+        self.selected_features_ = None
+        self.dropped_features_ = None
+        self.history_ = None
+        self.model_ = None
+        self.coef_table_ = None
+        self.metrics_ = None
+        self.vif_table_ = None
+        self.X_selected_ = None
 
-    X_df = _as_numeric_dataframe(X, feature_names)
-    y_arr = _as_numeric_vector(y)
-    _check_xy_shape(X_df, y_arr)
+    def fit(self, X, y, feature_names=None):
+        """Chạy backward elimination để chọn biến, lưu kết quả vào attributes."""
+        X_df = _as_numeric_dataframe(X, feature_names)
+        y_arr = _as_numeric_vector(y)
+        _check_xy_shape(X_df, y_arr)
 
-    max_iter = X_df.shape[1] if max_iter is None else max_iter
-    selected = X_df.columns.tolist()
-    dropped = []
-    history = []
+        if self.method == "pvalue":
+            result = self._backward_elimination_pvalue(X_df, y_arr)
+        elif self.method == "vif":
+            result = self._backward_elimination_vif(X_df, y_arr)
+        elif self.method == "both":
+            # Bước 1: loại đa cộng tuyến bằng VIF (chưa cần y)
+            vif_result = self._backward_elimination_vif(X_df, y=None)
+            # Bước 2: loại biến không có ý nghĩa thống kê bằng p-value
+            pvalue_result = self._backward_elimination_pvalue(
+                vif_result["X_selected"], y_arr
+            )
 
-    for iteration in range(1, max_iter + 1):
-        if len(selected) <= min_features:
-            break
+            # Gộp lịch sử 2 giai đoạn: VIF trước, p-value sau
+            pvalue_result["dropped_features"] = (
+                vif_result["dropped_features"] + pvalue_result["dropped_features"]
+            )
+            pvalue_result["history"] = vif_result["history"] + pvalue_result["history"]
+            pvalue_result["vif_table"] = run_vif_check(
+                pvalue_result["X_selected"], threshold=self.vif_threshold
+            )
+            result = pvalue_result
+        else:
+            raise ValueError("method phải là 'pvalue', 'vif', hoặc 'both'.")
+            
+        # Lưu kết quả vào attributes để truy cập từ notebook
+        self.X_selected_ = result.get("X_selected")
+        self.selected_features_ = result.get("selected_features")
+        self.dropped_features_ = result.get("dropped_features")
+        self.history_ = result.get("history")
+        self.model_ = result.get("model")
+        self.coef_table_ = result.get("coef_table")
+        self.metrics_ = result.get("metrics")
+        self.vif_table_ = result.get("vif_table")
+        
+        return self
 
-        X_current = X_df[selected]
+    def transform(self, X, feature_names=None):
+        """Trả về DataFrame chỉ chứa các cột đã được chọn sau fit."""
+        if self.selected_features_ is None:
+            raise ValueError("Mô hình chưa được fit. Hãy gọi fit() trước.")
+        X_df = _as_numeric_dataframe(X, feature_names)
+        return X_df[self.selected_features_]
 
-        try:
-            coef_table = ols_coefficient_table(X_current, y_arr)
-        except ValueError:
-            # Nếu OLS lỗi do đa cộng tuyến hoàn hảo, dùng VIF để bỏ bớt 1 cột trước.
-            vif_df = run_vif_check(X_current)
-            worst_vif = vif_df.iloc[0]
-            drop_feature = str(worst_vif["feature"])
+    def fit_transform(self, X, y, feature_names=None):
+        """Gọi fit rồi transform trong 1 bước."""
+        return self.fit(X, y, feature_names).transform(X, feature_names)
+
+    def summary(self):
+        """In ra tóm tắt thông tin mô hình đã chọn."""
+        if self.model_ is None:
+            print("Mô hình chưa được fit.")
+            return
+        
+        print("=== KẾT QUẢ CHỌN BIẾN OLS ===")
+        print(f"Phương pháp: {self.method}")
+        print(f"Số biến ban đầu: {len(self.selected_features_) + len(self.dropped_features_)}")
+        print(f"Số biến được giữ lại: {len(self.selected_features_)}")
+        print(f"Các biến bị loại: {self.dropped_features_}")
+        print("-" * 30)
+        print("Các chỉ số đánh giá mô hình:")
+        for k, v in self.metrics_.items():
+            if isinstance(v, float):
+                print(f"  {k}: {v:.4f}")
+            else:
+                print(f"  {k}: {v}")
+        print("-" * 30)
+        print("Bảng hệ số:")
+        print(self.coef_table_)
+        if self.vif_table_ is not None:
+            print("-" * 30)
+            print("Bảng VIF:")
+            print(self.vif_table_)
+
+    def _backward_elimination_pvalue(self, X_df, y_arr):
+        """Loại biến có p-value lớn nhất > alpha mỗi vòng, dừng khi tất cả <= alpha."""
+        max_iter = X_df.shape[1] if self.max_iter is None else self.max_iter
+        selected = X_df.columns.tolist()
+        dropped = []
+        history = []
+
+        for iteration in range(1, max_iter + 1):
+            if len(selected) <= self.min_features:
+                break
+
+            X_current = X_df[selected]
+
+            try:
+                coef_table = ols_coefficient_table(X_current, y_arr)
+            except ValueError:
+                # Ma trận suy biến (đa cộng tuyến hoàn hảo) → dùng VIF để loại 1 cột
+                vif_df = run_vif_check(X_current)
+                worst_vif = vif_df.iloc[0]
+                drop_feature = str(worst_vif["feature"])
+                dropped.append(drop_feature)
+                selected.remove(drop_feature)
+                history.append(
+                    {
+                        "iteration": iteration,
+                        "dropped": drop_feature,
+                        "criterion": "singular_matrix_vif",
+                        "value": float(worst_vif["VIF"]),
+                        "n_features": len(selected),
+                    }
+                )
+                if self.verbose:
+                    print(
+                        f"[p-value iter {iteration}] OLS suy biến, "
+                        f"loại '{drop_feature}' theo VIF={worst_vif['VIF']:.4f}"
+                    )
+                continue
+
+            # Bỏ Intercept, chỉ xét p-value của biến giải thích
+            feature_rows = coef_table[coef_table["feature"] != "Intercept"].copy()
+            # NaN p-value (fit hoàn hảo, hệ số = 0) → coi như không có ý nghĩa
+            feature_rows["_selection_pvalue"] = feature_rows["p_value"].fillna(1.0)
+            worst = feature_rows.sort_values("_selection_pvalue", ascending=False).iloc[0]
+            worst_pvalue = float(worst["_selection_pvalue"])
+            drop_feature = str(worst["feature"])
+
+            if worst_pvalue <= self.alpha:  # Tất cả biến đều có ý nghĩa --> dừng
+                history.append(
+                    {
+                        "iteration": iteration,
+                        "dropped": None,
+                        "criterion": "p_value",
+                        "value": worst_pvalue,
+                        "n_features": len(selected),
+                    }
+                )
+                break
+
             dropped.append(drop_feature)
             selected.remove(drop_feature)
             history.append(
                 {
                     "iteration": iteration,
                     "dropped": drop_feature,
-                    "criterion": "singular_matrix_vif",
-                    "value": float(worst_vif["VIF"]),
-                    "n_features": len(selected),
-                }
-            )
-            if verbose:
-                print(
-                    f"[p-value iter {iteration}] OLS suy biến, "
-                    f"loại '{drop_feature}' theo VIF={worst_vif['VIF']:.4f}"
-                )
-            continue
-
-        feature_rows = coef_table[coef_table["feature"] != "Intercept"].copy()
-        # p-value = NaN thường xảy ra khi fit hoàn hảo và hệ số bằng 0;
-        # với chọn biến, xem nó như biến không có ý nghĩa để có thể loại.
-        feature_rows["_selection_pvalue"] = feature_rows["p_value"].fillna(1.0)
-        worst = feature_rows.sort_values("_selection_pvalue", ascending=False).iloc[0]
-        worst_pvalue = float(worst["_selection_pvalue"])
-        drop_feature = str(worst["feature"])
-
-        if worst_pvalue <= alpha:
-            history.append(
-                {
-                    "iteration": iteration,
-                    "dropped": None,
                     "criterion": "p_value",
                     "value": worst_pvalue,
                     "n_features": len(selected),
                 }
             )
-            break
 
-        dropped.append(drop_feature)
-        selected.remove(drop_feature)
-        history.append(
-            {
-                "iteration": iteration,
-                "dropped": drop_feature,
-                "criterion": "p_value",
-                "value": worst_pvalue,
-                "n_features": len(selected),
-            }
-        )
+            if self.verbose:
+                print(
+                    f"[p-value iter {iteration}] Loại '{drop_feature}' "
+                    f"(p-value={worst_pvalue:.6f})"
+                )
 
-        if verbose:
-            print(
-                f"[p-value iter {iteration}] Loại '{drop_feature}' "
-                f"(p-value={worst_pvalue:.6f})"
-            )
+        # Fit lại mô hình cuối cùng với tập biến còn lại
+        X_selected = X_df[selected]
+        final_model = _fit_ols(X_selected, y_arr)
+        y_hat = final_model.predict(X_selected.to_numpy())
+        final_table = ols_coefficient_table(X_selected, y_arr)
+        metrics = _safe_model_metrics(y_arr, y_hat, p=len(selected))
 
-    X_selected = X_df[selected]
-    final_model = _fit_ols(X_selected, y_arr)
-    y_hat = final_model.predict(X_selected.to_numpy())
-    final_table = ols_coefficient_table(X_selected, y_arr)
-    metrics = _safe_model_metrics(y_arr, y_hat, p=len(selected))
+        return {
+            "X_selected": X_selected,
+            "selected_features": selected,
+            "dropped_features": dropped,
+            "history": history,
+            "model": final_model,
+            "coef_table": final_table,
+            "metrics": metrics,
+        }
 
-    return {
-        "X_selected": X_selected,
-        "selected_features": selected,
-        "dropped_features": dropped,
-        "history": history,
-        "model": final_model,
-        "coef_table": final_table,
-        "metrics": metrics,
-    }
+    def _backward_elimination_vif(self, X_df, y_arr=None):
+        """Loại biến có VIF cao nhất > threshold mỗi vòng, dừng khi tất cả <= threshold."""
+        if self.vif_threshold <= 1:
+            raise ValueError("threshold nên > 1. Thường dùng 5 hoặc 10 cho VIF.")
 
+        max_iter = X_df.shape[1] if self.max_iter is None else self.max_iter
+        selected = X_df.columns.tolist()
+        dropped = []
+        history = []
 
-def backward_elimination_vif(
-    X,
-    y=None,
-    threshold=10.0,
-    min_features=1,
-    max_iter=None,
-    feature_names=None,
-    verbose=True,
-):
-    """
-    Loại biến theo VIF để giảm đa cộng tuyến.
+        for iteration in range(1, max_iter + 1):
+            if len(selected) <= self.min_features:
+                break
 
-    Mỗi vòng lặp loại cột có VIF cao nhất nếu VIF đó vượt threshold.
-    """
-    if threshold <= 1:
-        raise ValueError("threshold nên > 1. Thường dùng 5 hoặc 10 cho VIF.")
+            vif_df = run_vif_check(X_df[selected], threshold=self.vif_threshold)
+            worst = vif_df.iloc[0]
+            worst_vif = float(worst["VIF"])
+            drop_feature = str(worst["feature"])
 
-    X_df = _as_numeric_dataframe(X, feature_names)
-    y_arr = None if y is None else _as_numeric_vector(y)
-    if y_arr is not None:
-        _check_xy_shape(X_df, y_arr)
+            if np.isfinite(worst_vif) and worst_vif <= self.vif_threshold:  # Không còn đa cộng tuyến → dừng
+                history.append(
+                    {
+                        "iteration": iteration,
+                        "dropped": None,
+                        "criterion": "VIF",
+                        "value": worst_vif,
+                        "n_features": len(selected),
+                    }
+                )
+                break
 
-    max_iter = X_df.shape[1] if max_iter is None else max_iter
-    selected = X_df.columns.tolist()
-    dropped = []
-    history = []
-
-    for iteration in range(1, max_iter + 1):
-        if len(selected) <= min_features:
-            break
-
-        vif_df = run_vif_check(X_df[selected], threshold=threshold)
-        worst = vif_df.iloc[0]
-        worst_vif = float(worst["VIF"])
-        drop_feature = str(worst["feature"])
-
-        if np.isfinite(worst_vif) and worst_vif <= threshold:
+            dropped.append(drop_feature)
+            selected.remove(drop_feature)
             history.append(
                 {
                     "iteration": iteration,
-                    "dropped": None,
+                    "dropped": drop_feature,
                     "criterion": "VIF",
                     "value": worst_vif,
                     "n_features": len(selected),
                 }
             )
-            break
 
-        dropped.append(drop_feature)
-        selected.remove(drop_feature)
-        history.append(
-            {
-                "iteration": iteration,
-                "dropped": drop_feature,
-                "criterion": "VIF",
-                "value": worst_vif,
-                "n_features": len(selected),
-            }
-        )
+            if self.verbose:
+                print(
+                    f"[VIF iter {iteration}] Loại '{drop_feature}' "
+                    f"(VIF={worst_vif:.4f})"
+                )
 
-        if verbose:
-            print(
-                f"[VIF iter {iteration}] Loại '{drop_feature}' "
-                f"(VIF={worst_vif:.4f})"
-            )
+        result = {
+            "X_selected": X_df[selected],
+            "selected_features": selected,
+            "dropped_features": dropped,
+            "history": history,
+            "vif_table": run_vif_check(X_df[selected], threshold=self.vif_threshold),
+        }
 
-    result = {
-        "X_selected": X_df[selected],
-        "selected_features": selected,
-        "dropped_features": dropped,
-        "history": history,
-        "vif_table": run_vif_check(X_df[selected], threshold=threshold),
-    }
+        # Nếu có y, fit OLS trên tập biến đã loại xong để tính metrics
+        if y_arr is not None:
+            final_model = _fit_ols(result["X_selected"], y_arr)
+            y_hat = final_model.predict(result["X_selected"].to_numpy())
+            result["model"] = final_model
+            result["coef_table"] = ols_coefficient_table(result["X_selected"], y_arr)
+            result["metrics"] = _safe_model_metrics(y_arr, y_hat, p=len(selected))
 
-    if y_arr is not None:
-        final_model = _fit_ols(result["X_selected"], y_arr)
-        y_hat = final_model.predict(result["X_selected"].to_numpy())
-        result["model"] = final_model
-        result["coef_table"] = ols_coefficient_table(result["X_selected"], y_arr)
-        result["metrics"] = _safe_model_metrics(y_arr, y_hat, p=len(selected))
-
-    return result
-
-
-def select_features_ols(
-    X,
-    y,
-    method="both",
-    alpha=0.05,
-    vif_threshold=10.0,
-    min_features=1,
-    max_iter=None,
-    feature_names=None,
-    verbose=True,
-):
-    """
-    Hàm tiện ích một dòng để chọn biến OLS.
-
-    method:
-      - "pvalue": chỉ loại theo p-value.
-      - "vif": chỉ loại theo VIF.
-      - "both": loại VIF trước, sau đó loại p-value.
-    """
-    X_df = _as_numeric_dataframe(X, feature_names)
-    y_arr = _as_numeric_vector(y)
-    _check_xy_shape(X_df, y_arr)
-
-    if method == "pvalue":
-        return backward_elimination_pvalue(
-            X_df,
-            y_arr,
-            alpha=alpha,
-            min_features=min_features,
-            max_iter=max_iter,
-            verbose=verbose,
-        )
-
-    if method == "vif":
-        return backward_elimination_vif(
-            X_df,
-            y_arr,
-            threshold=vif_threshold,
-            min_features=min_features,
-            max_iter=max_iter,
-            verbose=verbose,
-        )
-
-    if method == "both":
-        vif_result = backward_elimination_vif(
-            X_df,
-            y=None,
-            threshold=vif_threshold,
-            min_features=min_features,
-            max_iter=max_iter,
-            verbose=verbose,
-        )
-        pvalue_result = backward_elimination_pvalue(
-            vif_result["X_selected"],
-            y_arr,
-            alpha=alpha,
-            min_features=min_features,
-            max_iter=max_iter,
-            verbose=verbose,
-        )
-
-        pvalue_result["dropped_features"] = (
-            vif_result["dropped_features"] + pvalue_result["dropped_features"]
-        )
-        pvalue_result["history"] = vif_result["history"] + pvalue_result["history"]
-        pvalue_result["vif_table"] = run_vif_check(
-            pvalue_result["X_selected"],
-            threshold=vif_threshold,
-        )
-        return pvalue_result
-
-    raise ValueError("method phải là 'pvalue', 'vif', hoặc 'both'.")
+        return result
