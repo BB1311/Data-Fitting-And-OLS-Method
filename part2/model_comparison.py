@@ -1,574 +1,598 @@
 """
-model_comparison.py
-===================
-Class ModelComparison — So sánh Ridge và Lasso trên Ames Housing (Phần 2).
+ridge_lasso.py
+==============
+Cài đặt Ridge và Lasso Regression từ đầu (from scratch).
 
-Quy trình:
-  1. Đọc & làm sạch dữ liệu (clean_data)
-  2. Train/Test Split (80/20, stratified theo SalePrice)
-  3. Tiền xử lý (DataPipeline)
-  4. Loại bỏ đa cộng tuyến (VIF)
-  5. Ridge & Lasso — chọn λ tối ưu qua k-fold CV
-  6. Đánh giá trên test set: MAE, RMSE, R²
-  7. Biểu đồ: CV curve, coefficient path, feature importance,
-             actual vs predicted, residual analysis
+Lý thuyết
+---------
+Ridge (L2):  β̂_ridge = argmin  ½n·‖y − Xβ‖² + λ‖β‖²
+                       = (XᵀX + λI_p)⁻¹ Xᵀy     ← closed-form
+             (intercept KHÔNG bị phạt: penalty[0,0] = 0)
 
-Ghi chú: SalePrice đã log1p bên trong DataPipeline.
-         Mọi metric tính trên không gian log.
+Lasso (L1):  β̂_lasso = argmin  ½n·‖y − Xβ‖² + λ‖β‖₁
+             Không có closed-form → giải bằng Coordinate Descent.
+             Toán tử ngưỡng mềm: S(z, γ) = sign(z)·max(|z|−γ, 0)
+
+Giao diện
+---------
+    RidgeRegressor(lam, fit_intercept)
+    LassoRegressor(lam, fit_intercept, max_iter, tol, tol_f)
+
+Cả hai đều có:
+    .fit(X, y)          → self
+    .predict(X)         → y_pred
+    .score(X, y)        → R²
+    .coef_              → β̂ (không tính intercept), shape (p,)
+    .intercept_         → β̂₀ (scalar), 0.0 nếu fit_intercept=False
+    .fitted_values      → ŷ trên tập train
+    .residuals          → y − ŷ trên tập train
+
+Kiểm chứng
+----------
+    verify_ridge(X, y, lam)   → so sánh với sklearn.Ridge
+    verify_lasso(X, y, lam)   → so sánh với sklearn.Lasso
 """
 
-import os
-import sys
-import warnings
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
-import scipy.stats as stats
-
-warnings.filterwarnings("ignore")
-
-# ── sys.path ──────────────────────────────────────────────────────────
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
-for _p in [_ROOT, _HERE]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-from part2.clean_data        import clean_data
-from part2.data_pipeline     import DataPipeline
-from part1.ols_implementation import compute_r2
-from part1.ridge_lasso        import RidgeRegressor, LassoRegressor
-from part2.cross_validation   import compare_models_cv
-from part2.residual_analysis  import residual_plots
 
 
 # ══════════════════════════════════════════════════════════════════════
-# CLASS ModelComparison
+# BASE CLASS — dùng chung cho Ridge và Lasso
 # ══════════════════════════════════════════════════════════════════════
-class ModelComparison:
+class _BaseRegressor:
     """
-    So sánh Ridge và Lasso trên bộ dữ liệu Ames Housing.
+    Base class chứa logic dùng chung:
+      - _build_design_matrix : thêm cột 1 nếu fit_intercept=True
+      - predict, score       : dùng sau khi fit()
+      - coef_, intercept_    : tách hệ số từ beta_hat
+      - fitted_values, residuals : property chỉ đọc
+      - _check_fitted        : guard trước predict/score/property
+    """
+
+    def __init__(self, lam: float, fit_intercept: bool):
+        if lam < 0:
+            raise ValueError(f"lambda phải >= 0, nhận được {lam}.")
+        self.lam           = lam
+        self.fit_intercept = fit_intercept
+        # Các thuộc tính gán sau fit()
+        self._beta_hat      : np.ndarray | None = None
+        self._fitted_values : np.ndarray | None = None
+        self._residuals     : np.ndarray | None = None
+
+    # ------------------------------------------------------------------
+    # TIỆN ÍCH NỘI BỘ
+    # ------------------------------------------------------------------
+    def _build_design_matrix(self, X: np.ndarray) -> np.ndarray:
+        """Chuyển X (n,p) → X_design (n, p+1) nếu fit_intercept=True."""
+        X = np.asarray(X, dtype=float)
+        if X.ndim == 1:
+            X = X.reshape(-1, 1)
+        if self.fit_intercept:
+            return np.hstack([np.ones((X.shape[0], 1)), X])
+        return X
+
+    def _check_fitted(self):
+        if self._beta_hat is None:
+            raise RuntimeError("Gọi .fit(X, y) trước khi dùng mô hình.")
+
+    def _store_results(self, beta_hat: np.ndarray, X_design: np.ndarray,
+                       y: np.ndarray):
+        """Lưu kết quả chung sau khi solver tìm được β̂."""
+        self._beta_hat      = beta_hat
+        self._fitted_values = X_design @ beta_hat
+        self._residuals     = y - self._fitted_values
+
+    # ------------------------------------------------------------------
+    # GIAO DIỆN CÔNG KHAI
+    # ------------------------------------------------------------------
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Dự đoán ŷ = X_design · β̂."""
+        self._check_fitted()
+        return self._build_design_matrix(X) @ self._beta_hat
+
+    def score(self, X: np.ndarray, y: np.ndarray) -> float:
+        """
+        Tính R² trên tập (X, y).
+
+            R² = 1 − RSS / TSS
+
+        Returns
+        -------
+        float — R² ∈ (−∞, 1].  R²=1 là khớp hoàn hảo.
+        """
+        self._check_fitted()
+        y      = np.asarray(y, dtype=float).ravel()
+        y_pred = self.predict(X)
+        rss    = float(np.sum((y - y_pred) ** 2))
+        tss    = float(np.sum((y - y.mean()) ** 2))
+        return 1.0 - rss / tss if tss > 0 else 0.0
+
+    # ------------------------------------------------------------------
+    # PROPERTIES (chỉ đọc)
+    # ------------------------------------------------------------------
+    @property
+    def coef_(self) -> np.ndarray:
+        """β̂ của các feature (không tính intercept), shape (p,)."""
+        self._check_fitted()
+        return self._beta_hat[1:] if self.fit_intercept else self._beta_hat
+
+    @property
+    def intercept_(self) -> float:
+        """β̂₀ (scalar).  0.0 nếu fit_intercept=False."""
+        self._check_fitted()
+        return float(self._beta_hat[0]) if self.fit_intercept else 0.0
+
+    @property
+    def fitted_values(self) -> np.ndarray:
+        """ŷ = X_design · β̂ trên tập train."""
+        self._check_fitted()
+        return self._fitted_values
+
+    @property
+    def residuals(self) -> np.ndarray:
+        """ê = y − ŷ trên tập train."""
+        self._check_fitted()
+        return self._residuals
+
+
+# ══════════════════════════════════════════════════════════════════════
+# RIDGE REGRESSION
+# ══════════════════════════════════════════════════════════════════════
+class RidgeRegressor(_BaseRegressor):
+    """
+    Ridge Regression — closed-form solution.
+
+        β̂_ridge = (XᵀX + λ·D)⁻¹ Xᵀy
+
+    D là ma trận phạt: D = diag(0, 1, 1, …, 1)
+    (intercept không bị phạt).
 
     Parameters
     ----------
-    data_path    : str   — đường dẫn tới AmesHousing.csv
-    test_size    : float — tỉ lệ tập test (mặc định 0.20)
-    cv_k         : int   — số fold CV (mặc định 5)
-    vif_thresh   : float — ngưỡng VIF để loại cột (mặc định 10.0)
-    lam_grid     : list  — danh sách λ cần thử (mặc định log-spaced 30 điểm)
-    random_state : int   — seed reproducible (mặc định 42)
-    figure_dir   : str   — thư mục lưu biểu đồ
+    lam           : float ≥ 0, hệ số phạt λ  (mặc định 1.0)
+    fit_intercept : bool, có thêm intercept không  (mặc định True)
 
-    Workflow nhanh
-    --------------
-        mc = ModelComparison(data_path="data/AmesHousing.csv")
-        mc.run()                   # chạy toàn bộ pipeline
-        mc.summary()               # bảng so sánh
-        mc.plot_all()              # vẽ tất cả biểu đồ
+    Ví dụ
+    -----
+    >>> reg = RidgeRegressor(lam=1.0).fit(X_train, y_train)
+    >>> y_pred = reg.predict(X_test)
+    >>> print(reg.score(X_test, y_test))
     """
 
+    def __init__(self, lam: float = 1.0, fit_intercept: bool = True):
+        super().__init__(lam=lam, fit_intercept=fit_intercept)
+
     # ------------------------------------------------------------------
-    # KHỞI TẠO
+    # FIT
     # ------------------------------------------------------------------
+    def fit(self, X: np.ndarray, y: np.ndarray) -> "RidgeRegressor":
+        """
+        Giải phương trình Ridge:
+
+            (XᵀX + λ·D) β = Xᵀy
+
+        Dùng np.linalg.solve (nhanh hơn inv và số học ổn định hơn).
+
+        Parameters
+        ----------
+        X : (n, p)  — chưa có cột bias
+        y : (n,)
+        """
+        X_design = self._build_design_matrix(X)
+        y        = np.asarray(y, dtype=float).ravel()
+        n, k     = X_design.shape
+
+        # Ma trận phạt: không phạt intercept (vị trí [0,0])
+        D         = np.eye(k)
+        D[0, 0]   = 0.0
+        A         = X_design.T @ X_design + self.lam * D
+        b         = X_design.T @ y
+
+        try:
+            beta_hat = np.linalg.solve(A, b)
+        except np.linalg.LinAlgError:
+            # Fallback sang pseudo-inverse nếu A suy biến
+            beta_hat = np.linalg.pinv(A) @ b
+
+        self._store_results(beta_hat, X_design, y)
+        return self
+
+    # ------------------------------------------------------------------
+    # RIDGE TRACE (static)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def ridge_trace(
+        X        : np.ndarray,
+        y        : np.ndarray,
+        lambdas  : np.ndarray = None,
+        fit_intercept: bool   = True,
+        ax       : plt.Axes   = None,
+        show     : bool       = True,
+        save_path: str        = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Vẽ Ridge Trace: hệ số β̂_j theo λ (log-scale).
+
+        Parameters
+        ----------
+        X, y          : dữ liệu huấn luyện
+        lambdas       : dãy λ (mặc định 100 điểm log-space [1e-4, 1e4])
+        fit_intercept : bool
+        ax            : plt.Axes hiện có; None → tạo Figure mới
+        show          : gọi plt.show() sau khi vẽ
+        save_path     : đường dẫn lưu hình (None = không lưu)
+
+        Returns
+        -------
+        lambdas      : np.ndarray, shape (n_lam,)
+        coef_paths   : np.ndarray, shape (n_lam, p)  — không tính intercept
+        """
+        if lambdas is None:
+            lambdas = np.logspace(-4, 4, 100)
+
+        coef_paths = []
+        for lam in lambdas:
+            reg = RidgeRegressor(lam=lam, fit_intercept=fit_intercept).fit(X, y)
+            coef_paths.append(reg.coef_)
+        coef_paths = np.array(coef_paths)  # (n_lam, p)
+
+        _own_fig = ax is None
+        if _own_fig:
+            fig, ax = plt.subplots(figsize=(9, 5))
+
+        p = coef_paths.shape[1]
+        for j in range(p):
+            ax.plot(lambdas, coef_paths[:, j], label=f"β_{j+1}")
+
+        ax.set_xscale("log")
+        ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+        ax.set_xlabel("λ (log scale)")
+        ax.set_ylabel("Hệ số hồi quy β̂")
+        ax.set_title("Ridge Trace: Hệ số theo λ")
+        ax.legend(loc="upper right", fontsize=8, ncol=max(1, p // 8))
+        ax.grid(True, alpha=0.3)
+
+        if _own_fig:
+            plt.tight_layout()
+            if save_path:
+                plt.savefig(save_path, dpi=120, bbox_inches="tight")
+            if show:
+                plt.show()
+            plt.close()
+
+        return lambdas, coef_paths
+
+    # ------------------------------------------------------------------
+    def __repr__(self) -> str:
+        status = "fitted" if self._beta_hat is not None else "not fitted"
+        return f"RidgeRegressor(lam={self.lam}, fit_intercept={self.fit_intercept}, status={status})"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# SOFT-THRESHOLDING OPERATOR  (hàm nội bộ, dùng trong Lasso CD)
+# ══════════════════════════════════════════════════════════════════════
+def _soft_threshold(z: np.ndarray, gamma: float) -> np.ndarray:
+    """
+    Toán tử ngưỡng mềm (vectorized):
+
+        S(z, γ) = sign(z) · max(|z| − γ, 0)
+
+    Parameters
+    ----------
+    z     : scalar hoặc ndarray
+    gamma : float ≥ 0
+
+    Returns
+    -------
+    ndarray cùng shape với z
+    """
+    z = np.asarray(z, dtype=float)
+    return np.sign(z) * np.maximum(np.abs(z) - gamma, 0.0)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# LASSO REGRESSION
+# ══════════════════════════════════════════════════════════════════════
+class LassoRegressor(_BaseRegressor):
+    """
+    Lasso Regression — Coordinate Descent.
+
+    Bài toán tối ưu (quy ước ½n):
+
+        min_β  ½n · ‖y − Xβ‖² + λ · ‖β‖₁
+
+    Giải bằng Cyclic Coordinate Descent:
+        • Mỗi bước cập nhật β_j, giữ cố định tất cả β_{k≠j}.
+        • Residual được maintain tăng dần (O(n) mỗi bước, không rebuild).
+        • Intercept không bị phạt.
+
+    Parameters
+    ----------
+    lam           : float ≥ 0, hệ số phạt λ        (mặc định 1.0)
+    fit_intercept : bool                             (mặc định True)
+    max_iter      : int, số vòng lặp tối đa          (mặc định 1000)
+    tol           : float, ngưỡng hội tụ ‖Δβ‖_∞     (mặc định 1e-6)
+    tol_f         : float | None, ngưỡng hội tụ      (mặc định None)
+                    bổ sung theo relative change của objective.
+                    Khuyến nghị 1e-8 khi cần chặt hơn.
+
+    Ví dụ
+    -----
+    >>> reg = LassoRegressor(lam=0.1, max_iter=2000).fit(X_train, y_train)
+    >>> y_pred = reg.predict(X_test)
+    >>> print(f"R²={reg.score(X_test, y_test):.4f}, nnz={reg.n_nonzero}")
+    """
+
     def __init__(
         self,
-        data_path    : str   = os.path.join(_HERE, "data", "AmesHousing.csv"),
-        test_size    : float = 0.20,
-        cv_k         : int   = 5,
-        vif_thresh   : float = 10.0,
-        lam_grid     : list  = None,
-        random_state : int   = 42,
-        figure_dir   : str   = os.path.join(_HERE, "figures"),
+        lam           : float        = 1.0,
+        fit_intercept : bool         = True,
+        max_iter      : int          = 1000,
+        tol           : float        = 1e-6,
+        tol_f         : float | None = None,
     ):
-        self.data_path    = data_path
-        self.test_size    = test_size
-        self.cv_k         = cv_k
-        self.vif_thresh   = vif_thresh
-        self.lam_grid     = lam_grid or list(np.logspace(-3, 4, 30))
-        self.random_state = random_state
-        self.figure_dir   = figure_dir
-        os.makedirs(self.figure_dir, exist_ok=True)
+        super().__init__(lam=lam, fit_intercept=fit_intercept)
+        self.max_iter = max_iter
+        self.tol      = tol
+        self.tol_f    = tol_f
+        self.n_iter_  : int | None = None   # số vòng lặp thực tế đến hội tụ
 
-        # Các thuộc tính được gán sau khi chạy run()
-        self.pipe           : DataPipeline = None
-        self.X_train        : pd.DataFrame = None
-        self.X_test         : pd.DataFrame = None
-        self.y_train        : np.ndarray   = None
-        self.y_test         : np.ndarray   = None
-        self.results        : dict         = {}   # {"ridge": {...}, "lasso": {...}}
-        self.cv_full        : dict         = {}   # output đầy đủ từ compare_models_cv
-        self._fitted        : bool         = False
+    # ------------------------------------------------------------------
+    # FIT — Cyclic Coordinate Descent
+    # ------------------------------------------------------------------
+    def fit(self, X: np.ndarray, y: np.ndarray) -> "LassoRegressor":
+        """
+        Giải Lasso bằng Coordinate Descent.
+
+        Cập nhật từng β_j theo công thức:
+
+            ρ_j   = Xⱼᵀ · r⁽ʲ⁾           (partial residual)
+            β_j   = S(ρ_j, n·λ) / ‖Xⱼ‖²  (j ≥ 1, feature)
+            β_0   = ρ_0 / ‖X₀‖²           (intercept, không phạt)
+
+        Parameters
+        ----------
+        X : (n, p) — chưa có cột bias
+        y : (n,)
+        """
+        X_design = self._build_design_matrix(X)
+        y        = np.asarray(y, dtype=float).ravel()
+        n, k     = X_design.shape
+
+        beta      = np.zeros(k)
+        residuals = y.copy()                        # r = y − X·β, ban đầu β=0
+        x_sq      = (X_design ** 2).sum(axis=0)    # ‖Xⱼ‖², shape (k,)
+
+        # Lưu objective ban đầu (dùng nếu tol_f được bật)
+        f_old = self._objective(y, beta, X_design, n) if self.tol_f else None
+
+        for iteration in range(self.max_iter):
+            beta_old = beta.copy()
+
+            for j in range(k):
+                if x_sq[j] == 0.0:
+                    continue                         # cột hằng → bỏ qua
+
+                # Khôi phục partial residual: r⁽ʲ⁾ = r + Xⱼ·β_j
+                residuals += X_design[:, j] * beta[j]
+                rho_j      = float(X_design[:, j] @ residuals)
+
+                if j == 0:
+                    # Intercept — không phạt
+                    beta[j] = rho_j / x_sq[j]
+                else:
+                    # Feature — phạt ngưỡng mềm (n·λ vì objective dùng ½n)
+                    beta[j] = float(_soft_threshold(rho_j, n * self.lam) / x_sq[j])
+
+                # Cập nhật lại residual sau khi cập nhật β_j
+                residuals -= X_design[:, j] * beta[j]
+
+            # ── Kiểm tra hội tụ ────────────────────────────────────
+            # Điều kiện 1: thay đổi hệ số
+            if np.max(np.abs(beta - beta_old)) < self.tol:
+                self.n_iter_ = iteration + 1
+                break
+
+            # Điều kiện 2: relative change của objective (nếu bật)
+            if self.tol_f is not None:
+                f_new = self._objective(y, beta, X_design, n)
+                if np.abs(f_new - f_old) / max(1.0, np.abs(f_old)) < self.tol_f:
+                    self.n_iter_ = iteration + 1
+                    break
+                f_old = f_new
+        else:
+            self.n_iter_ = self.max_iter
+
+        self._store_results(beta, X_design, y)
+        return self
 
     # ------------------------------------------------------------------
     # TIỆN ÍCH NỘI BỘ
     # ------------------------------------------------------------------
     @staticmethod
-    def _mae(y_true, y_pred):
-        return float(np.mean(np.abs(y_true - y_pred)))
+    def _objective(y: np.ndarray, beta: np.ndarray,
+                   X_design: np.ndarray, n: int) -> float:
+        """
+        Tính objective function:
+            f(β) = ½n · ‖y − X·β‖² + λ · ‖β[1:]‖₁
+        Dùng để kiểm tra hội tụ theo tol_f.
+        """
+        r = y - X_design @ beta
+        return float((0.5 / n) * (r @ r))
 
+    # ------------------------------------------------------------------
+    # PROPERTY BỔ SUNG
+    # ------------------------------------------------------------------
+    @property
+    def n_nonzero(self) -> int:
+        """Số hệ số feature ≠ 0 (không tính intercept)."""
+        self._check_fitted()
+        return int(np.sum(np.abs(self.coef_) > 1e-10))
+
+    @property
+    def sparsity(self) -> float:
+        """Tỉ lệ hệ số = 0: sparsity = 1 − n_nonzero / p."""
+        self._check_fitted()
+        p = len(self.coef_)
+        return 1.0 - self.n_nonzero / p if p > 0 else 0.0
+
+    # ------------------------------------------------------------------
+    # LASSO PATH (static)
+    # ------------------------------------------------------------------
     @staticmethod
-    def _rmse(y_true, y_pred):
-        return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-
-    @staticmethod
-    def _r2(y_true, y_pred):
-        return float(compute_r2(y_true, y_pred))
-
-    def _evaluate(self, y_true, y_pred, label="") -> dict:
-        mae  = self._mae(y_true, y_pred)
-        rmse = self._rmse(y_true, y_pred)
-        r2   = self._r2(y_true, y_pred)
-        if label:
-            print(f"  {label:<35}  MAE={mae:.4f}  RMSE={rmse:.4f}  R²={r2:.4f}")
-        return {"mae": mae, "rmse": rmse, "r2": r2, "label": label}
-
-    def _savefig(self, fig, filename: str):
-        path = os.path.join(self.figure_dir, filename)
-        fig.savefig(path, dpi=150, bbox_inches="tight")
-        print(f"  [Saved] {path}")
-
-    # ------------------------------------------------------------------
-    # BƯỚC 1: ĐỌC & LÀM SẠCH
-    # ------------------------------------------------------------------
-    def load_and_clean(self) -> pd.DataFrame:
-        """Đọc CSV gốc và chạy clean_data pipeline."""
-        print("=" * 62)
-        print("BƯỚC 1: ĐỌC & LÀM SẠCH DỮ LIỆU")
-        print("=" * 62)
-        df = clean_data(self.data_path)
-        print(f"\n  Shape sau clean_data: {df.shape}")
-        return df
-
-    # ------------------------------------------------------------------
-    # BƯỚC 2: TRAIN/TEST SPLIT (stratified theo quantile SalePrice)
-    # ------------------------------------------------------------------
-    def split(self, X: pd.DataFrame, y: pd.Series):
+    def lasso_path(
+        X        : np.ndarray,
+        y        : np.ndarray,
+        lambdas  : np.ndarray = None,
+        fit_intercept: bool   = True,
+        ax       : plt.Axes   = None,
+        show     : bool       = True,
+        save_path: str        = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Phân tầng đơn giản theo quantile y.
-        Không dùng sklearn để giữ tinh thần tự cài đặt của đồ án.
-        """
-        print("\n" + "=" * 62)
-        print("BƯỚC 2: TRAIN/TEST SPLIT (80/20, stratified)")
-        print("=" * 62)
-        rng    = np.random.default_rng(self.random_state)
-        n_bins = 5
-        bins   = pd.qcut(y, q=n_bins, labels=False, duplicates="drop")
-        test_idx = []
-        for b in range(n_bins):
-            group  = np.where(bins == b)[0]
-            n_test = max(1, int(len(group) * self.test_size))
-            test_idx.extend(rng.choice(group, size=n_test, replace=False).tolist())
-
-        test_idx  = np.array(sorted(test_idx))
-        train_idx = np.setdiff1d(np.arange(len(y)), test_idx)
-
-        X_arr, y_arr = X.values, y.values
-        X_tr = pd.DataFrame(X_arr[train_idx], columns=X.columns)
-        X_te = pd.DataFrame(X_arr[test_idx],  columns=X.columns)
-        y_tr = pd.Series(y_arr[train_idx], name=y.name)
-        y_te = pd.Series(y_arr[test_idx],  name=y.name)
-
-        print(f"  Train: {X_tr.shape}  |  Test: {X_te.shape}")
-        return X_tr, X_te, y_tr, y_te
-
-    # ------------------------------------------------------------------
-    # BƯỚC 3: TIỀN XỬ LÝ (DataPipeline)
-    # ------------------------------------------------------------------
-    def preprocess(self, X_train_raw, X_test_raw, y_train_raw, y_test_raw):
-        """Fit pipeline trên train, transform cả hai tập."""
-        print("\n" + "=" * 62)
-        print("BƯỚC 3: TIỀN XỬ LÝ (DataPipeline)")
-        print("=" * 62)
-        self.pipe = DataPipeline(
-            outlier_method      = "winsorize",
-            outlier_threshold   = 0.02,
-            encoding            = "auto",
-            scale               = True,
-            drop_first          = True,
-            log_target          = True,   # log1p(SalePrice)
-            engineer_features   = True,
-            log_skewed_features = True,
-            add_interactions    = True,
-        )
-        X_train, y_train = self.pipe.fit_transform(X_train_raw, y_train_raw)
-        X_test           = self.pipe.transform(X_test_raw)
-        y_test           = np.log1p(y_test_raw.values)   # đồng nhất với y_train
-        y_train_np       = y_train.values if hasattr(y_train, "values") else np.array(y_train)
-
-        print(f"\n  Shape: Train {X_train.shape} | Test {X_test.shape}")
-        return X_train, X_test, y_train_np, y_test
-
-    # ------------------------------------------------------------------
-    # BƯỚC 4: LOẠI ĐA CỘNG TUYẾN (VIF)
-    # ------------------------------------------------------------------
-    def remove_multicollinearity(self, X_train: pd.DataFrame, X_test: pd.DataFrame):
-        """Iterative VIF — loại cột cho đến khi VIF ≤ vif_thresh."""
-        print("\n" + "=" * 62)
-        print(f"BƯỚC 4: LOẠI ĐA CỘNG TUYẾN (VIF > {self.vif_thresh})")
-        print("=" * 62)
-        X_train_vif, dropped = self.pipe.drop_high_vif(X_train, threshold=self.vif_thresh)
-        X_test_vif  = X_test.drop(columns=dropped, errors="ignore")
-        print(f"  Shape sau VIF: Train {X_train_vif.shape} | Test {X_test_vif.shape}")
-        return X_train_vif, X_test_vif
-
-    # ------------------------------------------------------------------
-    # BƯỚC 5: CHỌN λ QUA CV VÀ FIT MÔ HÌNH
-    # ------------------------------------------------------------------
-    def fit(self):
-        """
-        Chọn λ tốt nhất cho Ridge và Lasso qua k-fold CV,
-        sau đó fit mô hình cuối trên toàn bộ tập train.
-
-        Kết quả lưu vào self.results["ridge"] và self.results["lasso"].
-        """
-        self._check_fitted(require=False)
-        print("\n" + "=" * 62)
-        print(f"BƯỚC 5: CHỌN λ QUA {self.cv_k}-FOLD CV VÀ FIT MÔ HÌNH")
-        print("=" * 62)
-
-        X_tr = self.X_train.values
-        y_tr = self.y_train.ravel()
-
-        print(f"  Lưới λ: {len(self.lam_grid)} điểm "
-              f"[{self.lam_grid[0]:.2e} … {self.lam_grid[-1]:.2e}]")
-        self.cv_full = compare_models_cv(
-            X_tr, y_tr,
-            k            = self.cv_k,
-            lam_grid     = self.lam_grid,
-            random_state = self.random_state,
-        )
-
-        # ── Ridge ──────────────────────────────────────────────────
-        best_lam_r = self.cv_full["best_lam_ridge"]
-        print(f"\n  Ridge — λ* = {best_lam_r:.6f}  "
-              f"(CV MSE = {self.cv_full['best_ridge']['cv_mse']:.4f})")
-        ridge = RidgeRegressor(lam=best_lam_r, fit_intercept=True).fit(X_tr, y_tr)
-        pred_r = ridge.predict(self.X_test.values)
-        m_r = self._evaluate(self.y_test, pred_r, f"Ridge (λ={best_lam_r:.4f})")
-
-        self.results["ridge"] = {
-            "model"        : ridge,
-            "lam"          : best_lam_r,
-            "metrics"      : m_r,
-            "cv_result"    : self.cv_full["best_ridge"],
-            "all_cv"       : self.cv_full["ridge_results"],
-            "feature_names": list(self.X_train.columns),
-            "y_pred"       : pred_r,
-        }
-
-        # ── Lasso ──────────────────────────────────────────────────
-        best_lam_l = self.cv_full["best_lam_lasso"]
-        print(f"\n  Lasso — λ* = {best_lam_l:.6f}  "
-              f"(CV MSE = {self.cv_full['best_lasso']['cv_mse']:.4f})")
-        lasso = LassoRegressor(lam=best_lam_l, fit_intercept=True).fit(X_tr, y_tr)
-        pred_l = lasso.predict(self.X_test.values)
-        m_l = self._evaluate(self.y_test, pred_l, f"Lasso (λ={best_lam_l:.4f})")
-
-        n_nonzero = int(np.sum(np.abs(lasso.coef_[1:]) > 1e-6))
-        print(f"  Lasso: {n_nonzero}/{len(self.X_train.columns)} hệ số ≠ 0 "
-              f"(sparsity {100*(1 - n_nonzero/len(self.X_train.columns)):.1f}%)")
-
-        self.results["lasso"] = {
-            "model"        : lasso,
-            "lam"          : best_lam_l,
-            "metrics"      : m_l,
-            "cv_result"    : self.cv_full["best_lasso"],
-            "all_cv"       : self.cv_full["lasso_results"],
-            "feature_names": list(self.X_train.columns),
-            "y_pred"       : pred_l,
-            "n_nonzero"    : n_nonzero,
-        }
-
-        self._fitted = True
-
-    # ------------------------------------------------------------------
-    # RUN — chạy toàn bộ pipeline
-    # ------------------------------------------------------------------
-    def run(self):
-        """
-        Chạy đầy đủ pipeline:
-          load_and_clean → split → preprocess → remove_multicollinearity → fit
-        """
-        sns.set_theme(style="whitegrid")
-
-        df = self.load_and_clean()
-        y  = df["SalePrice"]
-        X  = df.drop(columns=["SalePrice"])
-
-        X_tr_raw, X_te_raw, y_tr_raw, y_te_raw = self.split(X, y)
-
-        X_tr, X_te, y_tr, y_te = self.preprocess(
-            X_tr_raw, X_te_raw, y_tr_raw, y_te_raw
-        )
-        X_tr_vif, X_te_vif = self.remove_multicollinearity(X_tr, X_te)
-
-        self.X_train = X_tr_vif
-        self.X_test  = X_te_vif
-        self.y_train = y_tr
-        self.y_test  = y_te
-
-        self.fit()
-        return self
-
-    # ------------------------------------------------------------------
-    # BẢNG TỔNG HỢP
-    # ------------------------------------------------------------------
-    def summary(self) -> pd.DataFrame:
-        """In và trả về bảng so sánh MAE / RMSE / R² trên test set."""
-        self._check_fitted()
-        rows = []
-        for key in ["ridge", "lasso"]:
-            r = self.results[key]
-            row = {
-                "Mô hình": f"{key.capitalize()} (λ={r['lam']:.4f})",
-                "λ*"     : round(r["lam"], 6),
-                "CV MSE" : round(r["cv_result"]["cv_mse"],  4),
-                "MAE"    : round(r["metrics"]["mae"],  4),
-                "RMSE"   : round(r["metrics"]["rmse"], 4),
-                "R²"     : round(r["metrics"]["r2"],   4),
-            }
-            if key == "lasso":
-                row["Hệ số ≠ 0"] = r["n_nonzero"]
-            rows.append(row)
-
-        df_cmp = pd.DataFrame(rows).set_index("Mô hình")
-        print("\n" + "═" * 70)
-        print("BẢNG SO SÁNH RIDGE vs LASSO TRÊN TẬP TEST")
-        print("═" * 70)
-        print(df_cmp.to_string())
-        print("═" * 70)
-
-        best = min(["ridge", "lasso"],
-                   key=lambda k: self.results[k]["metrics"]["rmse"])
-        print(f"\n✓ Mô hình tốt nhất (RMSE thấp nhất): {best.capitalize()}")
-        self._best_key = best
-        return df_cmp
-
-    # ------------------------------------------------------------------
-    # BIỂU ĐỒ
-    # ------------------------------------------------------------------
-    def plot_cv_lambda(self, save: bool = True) -> plt.Figure:
-        """CV MSE theo λ cho Ridge và Lasso (2 panel)."""
-        self._check_fitted()
-        lam_grid  = np.array(self.lam_grid)
-        ridge_mse = [r["cv_mse"] for r in self.results["ridge"]["all_cv"]]
-        lasso_mse = [r["cv_mse"] for r in self.results["lasso"]["all_cv"]]
-
-        fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-        fig.suptitle("Cross-Validation MSE theo λ", fontsize=14, fontweight="bold")
-
-        cfg = [
-            (axes[0], ridge_mse, self.results["ridge"]["lam"], "Ridge", "royalblue"),
-            (axes[1], lasso_mse, self.results["lasso"]["lam"], "Lasso", "firebrick"),
-        ]
-        for ax, mse_vals, lam_best, title, color in cfg:
-            ax.semilogx(lam_grid, mse_vals, color=color, lw=2,
-                        marker="o", markersize=4, label="CV MSE")
-            ax.axvline(lam_best, color="black", linestyle="--",
-                       label=f"λ* = {lam_best:.4f}")
-            ax.set_xlabel("λ (log scale)", fontsize=11)
-            ax.set_ylabel("CV MSE", fontsize=11)
-            ax.set_title(f"{title} Regression", fontsize=12, fontweight="bold")
-            ax.legend(fontsize=10)
-            ax.grid(True, alpha=0.4)
-
-        plt.tight_layout()
-        if save:
-            self._savefig(fig, "cv_lambda_curve.png")
-        return fig
-
-    def plot_lasso_coef_path(self, top_n: int = 10, save: bool = True) -> plt.Figure:
-        """
-        Lasso coefficient path: hệ số từng feature theo λ.
-        Trực quan hóa quá trình các hệ số co dần về 0.
-        """
-        self._check_fitted()
-        feat_names = self.results["lasso"]["feature_names"]
-        X_tr = self.X_train.values
-        y_tr = self.y_train.ravel()
-
-        coef_matrix = []
-        for lam in self.lam_grid:
-            m = LassoRegressor(lam=lam, fit_intercept=True).fit(X_tr, y_tr)
-            c = m.coef_[1:] if len(m.coef_) == len(feat_names) + 1 else m.coef_
-            coef_matrix.append(c)
-        coef_matrix = np.array(coef_matrix)   # (n_lam, n_feat)
-
-        top_idx = np.argsort(np.abs(coef_matrix[0]))[-top_n:]
-
-        fig, ax = plt.subplots(figsize=(10, 6))
-        for i in top_idx:
-            ax.semilogx(self.lam_grid, coef_matrix[:, i],
-                        label=feat_names[i], lw=1.5)
-        ax.axhline(0, color="black", lw=0.8, linestyle="--")
-        ax.axvline(self.results["lasso"]["lam"], color="grey",
-                   linestyle=":", lw=1.2, label=f"λ* = {self.results['lasso']['lam']:.4f}")
-        ax.set_xlabel("λ (log scale)", fontsize=11)
-        ax.set_ylabel("Hệ số hồi quy", fontsize=11)
-        ax.set_title(f"Lasso Coefficient Path — Top {top_n} features",
-                     fontsize=12, fontweight="bold")
-        ax.legend(fontsize=8, loc="center right", bbox_to_anchor=(1.19, 0.5))
-        ax.grid(True, alpha=0.4)
-        plt.tight_layout()
-        if save:
-            self._savefig(fig, "lasso_coef_path.png")
-        return fig
-
-    def plot_ridge_trace(self, top_n: int = 10, save: bool = True) -> plt.Figure:
-        """
-        Ridge trace: hệ số shrinkage theo λ.
-        Khác Lasso — hệ số co dần về 0 nhưng không bằng 0 hẳn.
-        """
-        self._check_fitted()
-        feat_names = self.results["ridge"]["feature_names"]
-        X_tr = self.X_train.values
-        y_tr = self.y_train.ravel()
-
-        coef_matrix = []
-        for lam in self.lam_grid:
-            m = RidgeRegressor(lam=lam, fit_intercept=True).fit(X_tr, y_tr)
-            c = m.coef_[1:] if len(m.coef_) == len(feat_names) + 1 else m.coef_
-            coef_matrix.append(c)
-        coef_matrix = np.array(coef_matrix)
-
-        top_idx = np.argsort(np.abs(coef_matrix[0]))[-top_n:]
-
-        fig, ax = plt.subplots(figsize=(10, 6))
-        for i in top_idx:
-            ax.semilogx(self.lam_grid, coef_matrix[:, i],
-                        label=feat_names[i], lw=1.5)
-        ax.axhline(0, color="black", lw=0.8, linestyle="--")
-        ax.axvline(self.results["ridge"]["lam"], color="grey",
-                   linestyle=":", lw=1.2, label=f"λ* = {self.results['ridge']['lam']:.4f}")
-        ax.set_xlabel("λ (log scale)", fontsize=11)
-        ax.set_ylabel("Hệ số hồi quy", fontsize=11)
-        ax.set_title(f"Ridge Trace — Top {top_n} features",
-                     fontsize=12, fontweight="bold")
-        ax.legend(fontsize=8, loc="center right", bbox_to_anchor=(1.19, 0.5))
-        ax.grid(True, alpha=0.4)
-        plt.tight_layout()
-        if save:
-            self._savefig(fig, "ridge_trace.png")
-        return fig
-
-    def plot_feature_importance(
-        self, model_key: str = None, top_n: int = 20, save: bool = True
-    ) -> plt.Figure:
-        """
-        Horizontal bar chart hệ số hồi quy (đã chuẩn hóa) của Ridge hoặc Lasso.
+        Vẽ Lasso Path: hệ số β̂_j theo λ (log-scale).
+        Khi λ tăng, hệ số co dần về 0 (sparse).
 
         Parameters
         ----------
-        model_key : "ridge" | "lasso" | None — None → dùng mô hình tốt nhất
+        X, y          : dữ liệu huấn luyện
+        lambdas       : dãy λ (mặc định 50 điểm log-space [1e-4, 1])
+        fit_intercept : bool
+        ax            : plt.Axes hiện có; None → tạo Figure mới
+        show          : gọi plt.show() sau khi vẽ
+        save_path     : đường dẫn lưu hình (None = không lưu)
+
+        Returns
+        -------
+        lambdas    : np.ndarray, shape (n_lam,)
+        coef_paths : np.ndarray, shape (n_lam, p)
         """
-        self._check_fitted()
-        key   = model_key or getattr(self, "_best_key", "ridge")
-        model = self.results[key]["model"]
-        feat  = self.results[key]["feature_names"]
+        if lambdas is None:
+            lambdas = np.logspace(-4, 0, 50)
 
-        coef = model.coef_
-        if len(coef) == len(feat) + 1:
-            coef = coef[1:]   # bỏ intercept
+        coef_paths = []
+        for lam in lambdas:
+            reg = LassoRegressor(lam=lam, fit_intercept=fit_intercept,
+                                 max_iter=5000, tol=1e-8).fit(X, y)
+            coef_paths.append(reg.coef_)
+        coef_paths = np.array(coef_paths)  # (n_lam, p)
 
-        df_coef = (
-            pd.DataFrame({"feature": feat, "coef": coef})
-            .assign(abs_coef=lambda d: d["coef"].abs())
-            .nlargest(top_n, "abs_coef")
-            .sort_values("coef")
-        )
+        _own_fig = ax is None
+        if _own_fig:
+            fig, ax = plt.subplots(figsize=(9, 5))
 
-        colors = ["firebrick" if c < 0 else "steelblue" for c in df_coef["coef"]]
-        fig, ax = plt.subplots(figsize=(9, max(5, top_n * 0.38)))
-        ax.barh(df_coef["feature"], df_coef["coef"],
-                color=colors, edgecolor="k", linewidth=0.4)
-        ax.axvline(0, color="black", linewidth=0.8)
-        ax.set_xlabel("Hệ số hồi quy (đã chuẩn hóa z-score)", fontsize=11)
-        ax.set_title(
-            f"Top {top_n} Feature Importance — {key.capitalize()} "
-            f"(λ={self.results[key]['lam']:.4f})",
-            fontsize=12, fontweight="bold",
-        )
-        ax.grid(True, axis="x", alpha=0.4)
-        plt.tight_layout()
-        if save:
-            self._savefig(fig, f"feature_importance_{key}.png")
-        return fig
+        p = coef_paths.shape[1]
+        for j in range(p):
+            ax.plot(lambdas, coef_paths[:, j], label=f"β_{j+1}")
 
-    def plot_actual_vs_predicted(
-        self, model_key: str = None, save: bool = True
-    ) -> plt.Figure:
-        """Scatter: giá trị thực vs dự đoán (log SalePrice)."""
-        self._check_fitted()
-        key    = model_key or getattr(self, "_best_key", "ridge")
-        y_pred = self.results[key]["y_pred"]
-        y_true = self.y_test
-        label  = self.results[key]["metrics"]["label"]
+        ax.set_xscale("log")
+        ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+        ax.set_xlabel("λ (log scale)")
+        ax.set_ylabel("Hệ số hồi quy β̂")
+        ax.set_title("Lasso Path: Hệ số theo λ (co dần về 0)")
+        ax.legend(loc="upper right", fontsize=8, ncol=max(1, p // 8))
+        ax.grid(True, alpha=0.3)
 
-        fig, ax = plt.subplots(figsize=(6, 6))
-        ax.scatter(y_true, y_pred, alpha=0.5, edgecolors="k",
-                   linewidths=0.3, color="steelblue", s=25)
-        lims = [min(y_true.min(), y_pred.min()),
-                max(y_true.max(), y_pred.max())]
-        ax.plot(lims, lims, "r--", lw=1.5, label="y = ŷ")
-        ax.set_xlabel("Giá trị thực (log SalePrice)", fontsize=11)
-        ax.set_ylabel("Giá trị dự đoán (log SalePrice)", fontsize=11)
-        ax.set_title(f"Actual vs Predicted — {label}",
-                     fontsize=12, fontweight="bold")
-        ax.legend()
-        ax.grid(True, alpha=0.4)
-        plt.tight_layout()
-        if save:
-            self._savefig(fig, f"actual_vs_predicted_{key}.png")
-        return fig
+        if _own_fig:
+            plt.tight_layout()
+            if save_path:
+                plt.savefig(save_path, dpi=120, bbox_inches="tight")
+            if show:
+                plt.show()
+            plt.close()
 
-    def plot_residuals(self, model_key: str = None, save: bool = True):
-        """4 biểu đồ phân tích phần dư (dùng residual_analysis.py từ Part 1)."""
-        self._check_fitted()
-        key   = model_key or getattr(self, "_best_key", "ridge")
-        model = self.results[key]["model"]
+        return lambdas, coef_paths
 
-        try:
-            fig, axes = residual_plots(
-                self.X_test.values, self.y_test, model.coef_
-            )
-            if save:
-                self._savefig(fig, f"residual_analysis_{key}.png")
-            return fig, axes
-        except Exception as e:
-            print(f"  [CẢNH BÁO] Không vẽ được residual analysis: {e}")
-            return None, None
-
-    def plot_all(self, save: bool = True):
-        """Vẽ toàn bộ biểu đồ: CV curve, traces, importance, scatter, residuals."""
-        self._check_fitted()
-        print("\n" + "=" * 62)
-        print("VẼ BIỂU ĐỒ")
-        print("=" * 62)
-        self.plot_cv_lambda(save=save)
-        self.plot_ridge_trace(save=save)
-        self.plot_lasso_coef_path(save=save)
-        self.plot_feature_importance("ridge", save=save)
-        self.plot_feature_importance("lasso", save=save)
-        self.plot_actual_vs_predicted("ridge", save=save)
-        self.plot_actual_vs_predicted("lasso", save=save)
-        self.plot_residuals(save=save)
-        plt.close("all")
-        print(f"\n  Tất cả biểu đồ đã lưu vào: {self.figure_dir}")
-
-    # ------------------------------------------------------------------
-    # KIỂM TRA TRẠNG THÁI
-    # ------------------------------------------------------------------
-    def _check_fitted(self, require: bool = True):
-        if require and not self._fitted:
-            raise RuntimeError("Gọi .run() hoặc .fit() trước.")
-
-    # ------------------------------------------------------------------
-    # REPR
     # ------------------------------------------------------------------
     def __repr__(self) -> str:
-        status = "fitted" if self._fitted else "not fitted"
-        return (f"ModelComparison(cv_k={self.cv_k}, vif_thresh={self.vif_thresh}, "
-                f"lam_grid=[{len(self.lam_grid)} pts], status={status})")
+        status = "fitted" if self._beta_hat is not None else "not fitted"
+        return (f"LassoRegressor(lam={self.lam}, fit_intercept={self.fit_intercept}, "
+                f"max_iter={self.max_iter}, tol={self.tol}, status={status})")
 
+
+# ══════════════════════════════════════════════════════════════════════
+# KIỂM CHỨNG VỚI SKLEARN
+# ══════════════════════════════════════════════════════════════════════
+def verify_ridge(
+    X   : np.ndarray,
+    y   : np.ndarray,
+    lam : float = 1.0,
+    tol : float = 1e-6,
+) -> dict:
+    """
+    So sánh RidgeRegressor (scratch) với sklearn.Ridge.
+
+    Returns
+    -------
+    dict: beta_scratch, beta_sklearn, max_diff, passed
+    """
+    from sklearn.linear_model import Ridge
+
+    scratch  = RidgeRegressor(lam=lam).fit(X, y)
+    sk       = Ridge(alpha=lam, fit_intercept=True).fit(X, y)
+
+    b_scratch = np.concatenate([[scratch.intercept_], scratch.coef_])
+    b_sklearn = np.concatenate([[sk.intercept_],      sk.coef_])
+    max_diff  = float(np.max(np.abs(b_scratch - b_sklearn)))
+    passed    = max_diff < tol
+
+    _print_verify_table("Ridge", b_scratch, b_sklearn, lam, max_diff, tol, passed)
+    return {"beta_scratch": b_scratch, "beta_sklearn": b_sklearn,
+            "max_diff": max_diff, "passed": passed}
+
+
+def verify_lasso(
+    X   : np.ndarray,
+    y   : np.ndarray,
+    lam : float = 0.1,
+    tol : float = 1e-4,
+) -> dict:
+    """
+    So sánh LassoRegressor (scratch) với sklearn.Lasso.
+
+    Quy ước hàm mất mát khớp nhau:
+        scratch : ½n·‖y−Xβ‖² + λ·‖β‖₁
+        sklearn : (1/2n)·‖y−Xβ‖² + alpha·‖β‖₁  với alpha = lam
+
+    Returns
+    -------
+    dict: beta_scratch, beta_sklearn, max_diff, passed
+    """
+    from sklearn.linear_model import Lasso
+
+    scratch   = LassoRegressor(lam=lam, max_iter=10_000, tol=1e-8).fit(X, y)
+    sk        = Lasso(alpha=lam, fit_intercept=True, max_iter=10_000, tol=1e-8).fit(X, y)
+
+    b_scratch = np.concatenate([[scratch.intercept_], scratch.coef_])
+    b_sklearn = np.concatenate([[sk.intercept_],      sk.coef_])
+    max_diff  = float(np.max(np.abs(b_scratch - b_sklearn)))
+    passed    = max_diff < tol
+
+    _print_verify_table("Lasso", b_scratch, b_sklearn, lam, max_diff, tol, passed)
+    return {"beta_scratch": b_scratch, "beta_sklearn": b_sklearn,
+            "max_diff": max_diff, "passed": passed}
+
+
+def _print_verify_table(
+    name     : str,
+    b_scratch: np.ndarray,
+    b_sklearn: np.ndarray,
+    lam      : float,
+    max_diff : float,
+    tol      : float,
+    passed   : bool,
+):
+    """In bảng so sánh scratch vs sklearn."""
+    print(f"\n{'─'*56}")
+    print(f"  VERIFICATION: {name} Scratch vs sklearn  (λ={lam})")
+    print(f"{'─'*56}")
+    print(f"  {'Hệ số':>12}  {'Scratch':>13}  {'sklearn':>13}  {'|Δ|':>11}")
+    print(f"  {'─'*12}  {'─'*13}  {'─'*13}  {'─'*11}")
+    labels = ["intercept"] + [f"β_{i}" for i in range(1, len(b_scratch))]
+    for label, bs, bsk in zip(labels, b_scratch, b_sklearn):
+        print(f"  {label:>12}  {bs:>13.6f}  {bsk:>13.6f}  {abs(bs-bsk):>11.2e}")
+    print(f"{'─'*56}")
+    print(f"  Max |Δ| = {max_diff:.2e}   tol = {tol:.0e}   "
+          f"→  {'✓ PASS' if passed else '✗ FAIL'}")
 
