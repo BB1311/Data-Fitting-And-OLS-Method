@@ -589,7 +589,10 @@ def verify_coef_inference_numpy(X: np.ndarray, beta_hat: np.ndarray, sigma2: flo
     XtX_inv_np = np.linalg.pinv(X_design.T @ X_design)
     var_beta_np = sigma2 * np.diag(XtX_inv_np)
     se_np = np.sqrt(np.maximum(var_beta_np, 0.0))
-    t_stats_np = beta_hat / se_np
+    with np.errstate(divide='ignore', invalid='ignore'):
+        # se_np == 0 và beta != 0 thì t = +/-inf
+        # se_np == 0 và beta == 0 thì t = nan
+        t_stats_np = beta_hat / se_np
     p_values_np = 2 * (1.0 - stats.t.cdf(np.abs(t_stats_np), df=df))
     
     max_diff_se = float(np.max(np.abs(se_scratch - se_np)))
