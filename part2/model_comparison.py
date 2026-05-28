@@ -15,10 +15,7 @@ for _p in [_ROOT, _HERE]:
         sys.path.insert(0, _p)
 
 from part1.ols_implementation import OLSRegressor, coef_inference, compute_r2
-
-# _mae và _rmse định nghĩa tại đây vì Part 1 không export dạng standalone.
-def _mae(y_true, y_pred):  return float(np.mean(np.abs(y_true - y_pred)))
-def _rmse(y_true, y_pred): return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+from part1.cross_validation import _mae, _rmse
 
 
 class OLSFull:
