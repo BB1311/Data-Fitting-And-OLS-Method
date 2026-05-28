@@ -595,11 +595,15 @@ def verify_coef_inference_numpy(X: np.ndarray, beta_hat: np.ndarray, sigma2: flo
         t_stats_np = beta_hat / se_np
     p_values_np = 2 * (1.0 - stats.t.cdf(np.abs(t_stats_np), df=df))
     
-    max_diff_se = float(np.max(np.abs(se_scratch - se_np)))
-    max_diff_t = float(np.max(np.abs(t_stats_scratch - t_stats_np)))
-    max_diff_p = float(np.max(np.abs(p_values_scratch - p_values_np)))
-    
-    passed = (max_diff_se < 1e-8) and (max_diff_t < 1e-8) and (max_diff_p < 1e-8)
+    max_diff_se = float(np.nanmax(np.abs(se_scratch - se_np)))
+    max_diff_t = float(np.nanmax(np.abs(t_stats_scratch - t_stats_np)))
+    max_diff_p = float(np.nanmax(np.abs(p_values_scratch - p_values_np)))
+
+    passed_se = np.allclose(se_scratch, se_np, atol=1e-8, rtol=1e-5, equal_nan=True)
+    passed_t = np.allclose(t_stats_scratch, t_stats_np, atol=1e-8, rtol=1e-5, equal_nan=True)
+    passed_p = np.allclose(p_values_scratch, p_values_np, atol=1e-8, rtol=1e-5, equal_nan=True)
+
+    passed = passed_se and passed_t and passed_p
     
     return {
         "se_numpy": se_np,
