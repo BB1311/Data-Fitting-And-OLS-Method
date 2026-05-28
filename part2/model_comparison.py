@@ -29,8 +29,8 @@ Cả hai đều có:
 
 Kiểm chứng
 ----------
-    verify_ridge(X, y, lam)   → so sánh với sklearn.Ridge
-    verify_lasso(X, y, lam)   → so sánh với sklearn.Lasso
+    verify_ridge(X, y, lam)   → so sánh với numpy pinv closed-form (không dùng sklearn)
+    verify_lasso(X, y, lam)   → so sánh với OLSRegressor (part1) khi lam nhỏ → 0
 """
 
 import numpy as np
@@ -512,7 +512,7 @@ class LassoRegressor(_BaseRegressor):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# KIỂM CHỨNG VỚI SKLEARN
+# KIỂM CHỨNG (KHÔNG DÙNG THƯ VIỆN NGOÀI)
 # ══════════════════════════════════════════════════════════════════════
 def verify_ridge(
     X   : np.ndarray,
@@ -521,24 +521,31 @@ def verify_ridge(
     tol : float = 1e-6,
 ) -> dict:
     """
-    So sánh RidgeRegressor (scratch) với sklearn.Ridge.
+    So sánh RidgeRegressor (scratch) với nghiệm closed-form tính trực tiếp bằng numpy.
+
+    Nghiệm tham chiếu:
+        β̂_ref = (XᵀX + λ·D)⁻¹ Xᵀy   dùng np.linalg.pinv
 
     Returns
     -------
-    dict: beta_scratch, beta_sklearn, max_diff, passed
+    dict: beta_scratch, beta_ref, max_diff, passed
     """
-    from sklearn.linear_model import Ridge
+    scratch   = RidgeRegressor(lam=lam, fit_intercept=True).fit(X, y)
 
-    scratch  = RidgeRegressor(lam=lam).fit(X, y)
-    sk       = Ridge(alpha=lam, fit_intercept=True).fit(X, y)
+    # Tính nghiệm tham chiếu bằng numpy thuần (không dùng thư viện ngoài)
+    X_design  = np.hstack([np.ones((X.shape[0], 1)), X])
+    k         = X_design.shape[1]
+    D         = np.eye(k)
+    D[0, 0]   = 0.0
+    A         = X_design.T @ X_design + lam * D
+    beta_ref  = np.linalg.pinv(A) @ (X_design.T @ y)
 
     b_scratch = np.concatenate([[scratch.intercept_], scratch.coef_])
-    b_sklearn = np.concatenate([[sk.intercept_],      sk.coef_])
-    max_diff  = float(np.max(np.abs(b_scratch - b_sklearn)))
+    max_diff  = float(np.max(np.abs(b_scratch - beta_ref)))
     passed    = max_diff < tol
 
-    _print_verify_table("Ridge", b_scratch, b_sklearn, lam, max_diff, tol, passed)
-    return {"beta_scratch": b_scratch, "beta_sklearn": b_sklearn,
+    _print_verify_table("Ridge", b_scratch, beta_ref, lam, max_diff, tol, passed)
+    return {"beta_scratch": b_scratch, "beta_ref": beta_ref,
             "max_diff": max_diff, "passed": passed}
 
 
@@ -549,28 +556,36 @@ def verify_lasso(
     tol : float = 1e-4,
 ) -> dict:
     """
-    So sánh LassoRegressor (scratch) với sklearn.Lasso.
+    So sánh LassoRegressor (scratch, coordinate descent) với
+    OLSRegressor (scratch, closed-form) khi lam nhỏ.
 
-    Quy ước hàm mất mát khớp nhau:
-        scratch : ½n·‖y−Xβ‖² + λ·‖β‖₁
-        sklearn : (1/2n)·‖y−Xβ‖² + alpha·‖β‖₁  với alpha = lam
+    Khi λ → 0, Lasso tiến về OLS → hai kết quả phải gần nhau.
+    Đây là cách kiểm tra tính đúng đắn mà không dùng thư viện ngoài.
+
+    Quy ước hàm mất mát:
+        Lasso : ½n·‖y−Xβ‖² + λ·‖β‖₁
+
+    Parameters
+    ----------
+    lam : float — λ nhỏ (ví dụ 1e-4) để Lasso ≈ OLS
 
     Returns
     -------
-    dict: beta_scratch, beta_sklearn, max_diff, passed
+    dict: beta_lasso, beta_ols_ref, max_diff, passed
     """
-    from sklearn.linear_model import Lasso
+    from part1.ols_implementation import OLSRegressor
 
-    scratch   = LassoRegressor(lam=lam, max_iter=10_000, tol=1e-8).fit(X, y)
-    sk        = Lasso(alpha=lam, fit_intercept=True, max_iter=10_000, tol=1e-8).fit(X, y)
+    lasso_reg = LassoRegressor(lam=lam, fit_intercept=True,
+                               max_iter=10_000, tol=1e-8).fit(X, y)
+    ols_ref   = OLSRegressor(fit_intercept=True).fit(X, y)
 
-    b_scratch = np.concatenate([[scratch.intercept_], scratch.coef_])
-    b_sklearn = np.concatenate([[sk.intercept_],      sk.coef_])
-    max_diff  = float(np.max(np.abs(b_scratch - b_sklearn)))
-    passed    = max_diff < tol
+    b_lasso = np.concatenate([[lasso_reg.intercept_], lasso_reg.coef_])
+    b_ref   = np.concatenate([[ols_ref.intercept_],   ols_ref.coef_])
+    max_diff = float(np.max(np.abs(b_lasso - b_ref)))
+    passed   = max_diff < tol
 
-    _print_verify_table("Lasso", b_scratch, b_sklearn, lam, max_diff, tol, passed)
-    return {"beta_scratch": b_scratch, "beta_sklearn": b_sklearn,
+    _print_verify_table("Lasso", b_lasso, b_ref, lam, max_diff, tol, passed)
+    return {"beta_lasso": b_lasso, "beta_ols_ref": b_ref,
             "max_diff": max_diff, "passed": passed}
 
 
@@ -583,11 +598,11 @@ def _print_verify_table(
     tol      : float,
     passed   : bool,
 ):
-    """In bảng so sánh scratch vs sklearn."""
+    """In bảng so sánh scratch vs reference."""
     print(f"\n{'─'*56}")
-    print(f"  VERIFICATION: {name} Scratch vs sklearn  (λ={lam})")
+    print(f"  VERIFICATION: {name} Scratch vs Reference  (λ={lam})")
     print(f"{'─'*56}")
-    print(f"  {'Hệ số':>12}  {'Scratch':>13}  {'sklearn':>13}  {'|Δ|':>11}")
+    print(f"  {'Hệ số':>12}  {'Scratch':>13}  {'Reference':>13}  {'|Δ|':>11}")
     print(f"  {'─'*12}  {'─'*13}  {'─'*13}  {'─'*11}")
     labels = ["intercept"] + [f"β_{i}" for i in range(1, len(b_scratch))]
     for label, bs, bsk in zip(labels, b_scratch, b_sklearn):
@@ -595,4 +610,3 @@ def _print_verify_table(
     print(f"{'─'*56}")
     print(f"  Max |Δ| = {max_diff:.2e}   tol = {tol:.0e}   "
           f"→  {'✓ PASS' if passed else '✗ FAIL'}")
-

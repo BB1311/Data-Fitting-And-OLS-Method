@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")   # non-interactive backend để test không mở cửa sổ
+import matplotlib.pyplot as plt
 
 # ── path ──────────────────────────────────────────────────────────────
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -387,14 +388,12 @@ class TestPlots(unittest.TestCase):
 
     # ── test 1: plot_cv_lambda trả về Figure ─────────────────────────
     def test_plot_cv_lambda_returns_figure(self):
-        import matplotlib.pyplot as plt
         fig = self.mc.plot_cv_lambda(save=False)
         self.assertIsNotNone(fig)
         plt.close("all")
 
     # ── test 2: plot_feature_importance không raise ───────────────────
     def test_plot_feature_importance_no_error(self):
-        import matplotlib.pyplot as plt
         for key in ["ridge", "lasso"]:
             fig = self.mc.plot_feature_importance(model_key=key, save=False)
             self.assertIsNotNone(fig)
@@ -402,7 +401,6 @@ class TestPlots(unittest.TestCase):
 
     # ── test 3: plot_actual_vs_predicted cho cả hai mô hình ──────────
     def test_plot_actual_vs_predicted(self):
-        import matplotlib.pyplot as plt
         for key in ["ridge", "lasso"]:
             fig = self.mc.plot_actual_vs_predicted(model_key=key, save=False)
             self.assertIsNotNone(fig)
@@ -410,14 +408,12 @@ class TestPlots(unittest.TestCase):
 
     # ── test 4: plot_ridge_trace không raise ─────────────────────────
     def test_plot_ridge_trace_no_error(self):
-        import matplotlib.pyplot as plt
         fig = self.mc.plot_ridge_trace(top_n=5, save=False)
         self.assertIsNotNone(fig)
         plt.close("all")
 
     # ── test 5: plot_lasso_coef_path không raise ─────────────────────
     def test_plot_lasso_coef_path_no_error(self):
-        import matplotlib.pyplot as plt
         fig = self.mc.plot_lasso_coef_path(top_n=5, save=False)
         self.assertIsNotNone(fig)
         plt.close("all")
