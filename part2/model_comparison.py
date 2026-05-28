@@ -14,16 +14,11 @@ for _p in [_ROOT, _HERE]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from part1.ols_implementation import OLSRegressor, coef_inference
+from part1.ols_implementation import OLSRegressor, coef_inference, compute_r2
 
-# Định nghĩa lại thay vì import từ ols_implementation để OLSFull
-# không phụ thuộc vào signature nội bộ của Part 1 — dễ test độc lập
+# _mae và _rmse định nghĩa tại đây vì Part 1 không export dạng standalone.
 def _mae(y_true, y_pred):  return float(np.mean(np.abs(y_true - y_pred)))
 def _rmse(y_true, y_pred): return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-def _r2(y_true, y_pred):
-    ss_res = np.sum((y_true - y_pred) ** 2)
-    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-    return float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
 
 
 class OLSFull:
@@ -89,7 +84,7 @@ class OLSFull:
         metrics = {
             "mae"  : _mae(y_arr, y_pred),
             "rmse" : _rmse(y_arr, y_pred),
-            "r2"   : _r2(y_arr, y_pred),
+            "r2"   : compute_r2(y_arr, y_pred),
             "label": "OLS Full",
         }
         if verbose:
