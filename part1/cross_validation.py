@@ -1,6 +1,6 @@
 import numpy as np
-from ols_implementation import OLSRegressor, compute_r2
-from ridge_lasso import RidgeRegressor, LassoRegressor
+from part1.ols_implementation import OLSRegressor, compute_r2
+from part1.ridge_lasso import ridge_fit, lasso_fit
 
 # HÀM TIỆN ÍCH
 def _mse(y_true, y_pred):
@@ -91,11 +91,13 @@ def kfold_cv(
             reg    = OLSRegressor(fit_intercept=True).fit(X_train, y_train)
             y_pred = reg.predict(X_val)
         elif model == "ridge":
-            reg    = RidgeRegressor(lam=lam, fit_intercept=True).fit(X_train, y_train)
-            y_pred = reg.predict(X_val)
+            res   = ridge_fit(X_train, y_train, lam=lam)
+            beta  = res["beta_hat"]
+            y_pred = np.column_stack([np.ones(len(X_val)), X_val]) @ beta
         else:  # lasso
-            reg    = LassoRegressor(lam=lam, fit_intercept=True).fit(X_train, y_train)
-            y_pred = reg.predict(X_val)
+            res   = lasso_fit(X_train, y_train, lam=lam)
+            beta  = res["beta_hat"]
+            y_pred = np.column_stack([np.ones(len(X_val)), X_val]) @ beta
 
         fold_mse.append(_mse(y_val, y_pred))
         fold_rmse.append(_rmse(y_val, y_pred))

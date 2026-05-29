@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 from part1.cross_validation import kfold_cv, compare_models_cv
-from part1.ridge_lasso import LassoRegressor
+from part1.ridge_lasso import lasso_fit
 
 # Tiện ích nội bộ
 def _make_linear_data(n=200, p=3, noise=0.0, seed=0):
@@ -181,8 +181,8 @@ class TestKFoldLasso:
         )
 
         # Kiểm tra tính thưa
-        final_model = LassoRegressor(lam=best_lam, max_iter=5000).fit(X, y)
-        n_nonzero = final_model.n_nonzero
+        final_model = lasso_fit(X, y, lam=best_lam)
+        n_nonzero = np.count_nonzero(final_model["beta_hat"])
 
         assert n_nonzero < X.shape[1], (
             f"Lasso phải tạo ra mô hình thưa. Số biến khác 0 = {n_nonzero}, "

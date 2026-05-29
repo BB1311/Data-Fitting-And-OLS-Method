@@ -6,11 +6,11 @@ Cài đặt Ridge Regression (dạng kín) và Lasso Regression (coordinate desc
 Cấu trúc file:
   - _ridge_core_solver        : Giải phương trình Ridge dạng kín (lõi toán học).
   - ridge_fit                 : Hàm hỗ trợ nhanh cho Ridge.
-  - RidgeRegressor            : Class OOP bao gồm fit / predict / ridge_trace.
+  - ridge_trace               : Vẽ Ridge Trace, theo dõi beta_j theo lambda.
   - _soft_threshold           : Toán tử ngưỡng mềm dùng trong Lasso.
   - _lasso_coordinate_descent : Coordinate Descent cho Lasso.
   - lasso_fit                 : Hàm hỗ trợ nhanh cho Lasso.
-  - LassoRegressor            : Class OOP bao gồm fit / predict / lasso_path.
+  - lasso_path                : Vẽ Lasso Path, theo dõi beta_j theo lambda.
   - verify_ridge_sklearn      : Kiểm chứng Ridge với sklearn.
   - verify_lasso_sklearn      : Kiểm chứng Lasso với sklearn.
 """
@@ -105,119 +105,57 @@ def ridge_fit(X: np.ndarray, y: np.ndarray, lam: float = 1.0) -> dict:
     return _ridge_core_solver(X_design, y, lam)
 
 
-class RidgeRegressor:
+def ridge_trace(
+    X: np.ndarray,
+    y: np.ndarray,
+    lambdas: np.ndarray = None,
+    fit_intercept: bool = True,
+    show: bool = True,
+    save_path: str = None,
+) -> tuple:
     """
-    Ridge Regression với giao diện OOP tương tự OLSRegressor.
+    Vẽ Ridge Trace: sự thay đổi của từng beta_j theo lambda.
 
     Parameters
     ----------
-    lam : float >= 0,  default=1.0
-    fit_intercept : bool,  default=True
+    X, y          : dữ liệu huấn luyện.
+    lambdas       : dãy lambda. Mặc định: 100 điểm log-scale [1e-4, 1e4].
+    fit_intercept : có thêm intercept không (hiện tại chỉ hỗ trợ True).
+    show          : hiển thị biểu đồ (plt.show()).
+    save_path     : nếu không None, lưu biểu đồ vào đường dẫn này.
+
+    Returns
+    -------
+    (lambdas, coef_paths)  — shape (n_lam,), (n_lam, k).
     """
+    if lambdas is None:
+        lambdas = np.logspace(-4, 4, 100)
 
-    def __init__(self, lam: float = 1.0, fit_intercept: bool = True):
-        self.lam           = lam
-        self.fit_intercept = fit_intercept
-        self.beta_hat      = None
-        self._X_design     = None
-        self._y            = None
-        self._fitted_values = None
-        self._residuals    = None
-        self.n = self.k = None
+    coef_paths = []
+    for lam in lambdas:
+        res = ridge_fit(X, y, lam=lam)
+        coef_paths.append(res["beta_hat"])
+    coef_paths = np.array(coef_paths)
 
-    # ------------------------------------------------------------------
-    def _prepare_design_matrix(self, X: np.ndarray) -> np.ndarray:
-        X = np.asarray(X, dtype=float)
-        if X.ndim == 1:
-            X = X.reshape(-1, 1)
-        if self.fit_intercept:
-            return np.hstack([np.ones((X.shape[0], 1)), X])
-        return X
+    fig, ax = plt.subplots(figsize=(9, 5))
+    start = 1 if fit_intercept else 0
+    for j in range(start, coef_paths.shape[1]):
+        ax.plot(lambdas, coef_paths[:, j], label=f"beta_{j}")
+    ax.set_xscale("log")
+    ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+    ax.set_xlabel("lambda (log scale)")
+    ax.set_ylabel("Gia tri he so beta_hat")
+    ax.set_title("Ridge Trace: He so hoi quy theo lambda")
+    ax.legend(loc="upper right", fontsize=8, ncol=2)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=120)
+    if show:
+        plt.show()
+    plt.close(fig)
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "RidgeRegressor":
-        X_design = self._prepare_design_matrix(X)
-        y        = np.asarray(y, dtype=float).ravel()
-        res      = _ridge_core_solver(X_design, y, self.lam)
-
-        self.beta_hat       = res["beta_hat"]
-        self._X_design      = X_design
-        self._y             = y
-        self._fitted_values = res["y_hat"]
-        self._residuals     = res["residuals"]
-        self.n, self.k      = res["n"], res["k"]
-        return self
-
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        self._check_fitted()
-        return self._prepare_design_matrix(X) @ self.beta_hat
-
-    def _check_fitted(self):
-        if self.beta_hat is None:
-            raise RuntimeError("Lỗi: Gọi fit() trước khi sử dụng mô hình.")
-
-    @property
-    def residuals(self)     -> np.ndarray: 
-        self._check_fitted()
-        return self._residuals
-    
-    @property
-    def fitted_values(self) -> np.ndarray: 
-        self._check_fitted()
-        return self._fitted_values
-
-    # ------------------------------------------------------------------
-    @staticmethod
-    def ridge_trace(
-        X: np.ndarray,
-        y: np.ndarray,
-        lambdas: np.ndarray = None,
-        fit_intercept: bool = True,
-        show: bool = True,
-        save_path: str = None,
-    ) -> tuple:
-        """
-        Vẽ Ridge Trace: sự thay đổi của từng beta_j theo lambda.
-
-        Parameters
-        ----------
-        X, y          : dữ liệu huấn luyện.
-        lambdas       : dãy lambda. Mặc định: 100 điểm log-scale [1e-4, 1e4].
-        fit_intercept : có thêm intercept không.
-        show          : hiển thị biểu đồ (plt.show()).
-        save_path     : nếu không None, lưu biểu đồ vào đường dẫn này.
-
-        Returns
-        -------
-        (lambdas, coef_paths)  — shape (n_lam,), (n_lam, k).
-        """
-        if lambdas is None:
-            lambdas = np.logspace(-4, 4, 100)
-
-        coef_paths = []
-        for lam in lambdas:
-            m = RidgeRegressor(lam=lam, fit_intercept=fit_intercept).fit(X, y)
-            coef_paths.append(m.beta_hat)
-        coef_paths = np.array(coef_paths)
-
-        fig, ax = plt.subplots(figsize=(9, 5))
-        start = 1 if fit_intercept else 0
-        for j in range(start, coef_paths.shape[1]):
-            ax.plot(lambdas, coef_paths[:, j], label=f"beta_{j}")
-        ax.set_xscale("log")
-        ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
-        ax.set_xlabel("lambda (log scale)")
-        ax.set_ylabel("Gia tri he so beta_hat")
-        ax.set_title("Ridge Trace: He so hoi quy theo lambda")
-        ax.legend(loc="upper right", fontsize=8, ncol=2)
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        if save_path:
-            fig.savefig(save_path, dpi=120)
-        if show:
-            plt.show()
-        plt.close(fig)
-
-        return lambdas, coef_paths
+    return lambdas, coef_paths
 
 
 # ============================================================
@@ -367,134 +305,57 @@ def lasso_fit(
     }
 
 
-class LassoRegressor:
+def lasso_path(
+    X: np.ndarray,
+    y: np.ndarray,
+    lambdas: np.ndarray = None,
+    fit_intercept: bool = True,
+    show: bool = True,
+    save_path: str = None,
+) -> tuple:
     """
-    Lasso Regression với giao diện OOP tương tự RidgeRegressor.
+    Vẽ Lasso Path: theo dõi sự thay đổi beta_j khi lambda tăng dần.
 
     Parameters
     ----------
-    lam           : float >= 0,    default=1.0
-    fit_intercept : bool,          default=True
-    max_iter      : int,           default=1000
-    tol           : float,         default=1e-6
-    tol_f         : float or None, default=None
+    X, y          : dữ liệu.
+    lambdas       : dãy lambda nhỏ → lớn. Mặc định: 50 điểm [1e-4, 1.0].
+    fit_intercept : bool (hiện tại chỉ hỗ trợ True).
+    show          : hiển thị biểu đồ.
+    save_path     : lưu biểu đồ nếu không None.
+
+    Returns
+    -------
+    (lambdas, coef_paths)
     """
+    if lambdas is None:
+        lambdas = np.logspace(-4, 0, 50)
 
-    def __init__(
-        self,
-        lam:           float = 1.0,
-        fit_intercept: bool  = True,
-        max_iter:      int   = 1000,
-        tol:           float = 1e-6,
-        tol_f:         float = None,
-    ):
-        self.lam           = lam
-        self.fit_intercept = fit_intercept
-        self.max_iter      = max_iter
-        self.tol           = tol
-        self.beta_hat      = None
-        self._X_design     = None
-        self._y            = None
-        self._fitted_values = None
-        self._residuals    = None
-        self.tol_f = tol_f
+    coef_paths = []
+    for lam in lambdas:
+        res = lasso_fit(X, y, lam=lam, max_iter=5000, tol=1e-8)
+        coef_paths.append(res["beta_hat"])
+    coef_paths = np.array(coef_paths)
 
-    def _prepare_design_matrix(self, X: np.ndarray) -> np.ndarray:
-        X = np.asarray(X, dtype=float)
-        if X.ndim == 1:
-            X = X.reshape(-1, 1)
-        if self.fit_intercept:
-            return np.hstack([np.ones((X.shape[0], 1)), X])
-        return X
+    fig, ax = plt.subplots(figsize=(9, 5))
+    start = 1 if fit_intercept else 0
+    for j in range(start, coef_paths.shape[1]):
+        ax.plot(lambdas, coef_paths[:, j], label=f"beta_{j}")
+    ax.set_xscale("log")
+    ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+    ax.set_xlabel("lambda (log scale)")
+    ax.set_ylabel("Gia tri he so beta_hat")
+    ax.set_title("Lasso Path: He so hoi quy theo lambda")
+    ax.legend(loc="upper right", fontsize=8, ncol=2)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=120)
+    if show:
+        plt.show()
+    plt.close(fig)
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "LassoRegressor":
-        X_design = self._prepare_design_matrix(X)
-        y        = np.asarray(y, dtype=float).ravel()
-
-        self.beta_hat       = _lasso_coordinate_descent(
-                                  X_design, y, self.lam, self.max_iter, self.tol, tol_f= self.tol_f)
-        self._X_design      = X_design
-        self._y             = y
-        self._fitted_values = X_design @ self.beta_hat
-        self._residuals     = y - self._fitted_values
-        return self
-
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        self._check_fitted()
-        return self._prepare_design_matrix(X) @ self.beta_hat
-
-    def _check_fitted(self):
-        if self.beta_hat is None:
-            raise RuntimeError("Lỗi: Gọi fit() trước khi sử dụng mô hình.")
-
-    @property
-    def residuals(self)     -> np.ndarray: 
-        self._check_fitted()
-        return self._residuals
-    @property
-    def fitted_values(self) -> np.ndarray: 
-        self._check_fitted()
-        return self._fitted_values
-
-    @property
-    def n_nonzero(self) -> int:
-        """Số hệ số != 0 (không tính intercept)."""
-        self._check_fitted()
-        return int(np.sum(self.beta_hat[1:] != 0))
-
-    @staticmethod
-    def lasso_path(
-        X: np.ndarray,
-        y: np.ndarray,
-        lambdas: np.ndarray = None,
-        fit_intercept: bool = True,
-        show: bool = True,
-        save_path: str = None,
-    ) -> tuple:
-        """
-        Vẽ Lasso Path: theo dõi sự thay đổi beta_j khi lambda tăng dần.
-
-        Parameters
-        ----------
-        X, y          : dữ liệu.
-        lambdas       : dãy lambda nhỏ → lớn. Mặc định: 50 điểm [1e-4, 1.0].
-        fit_intercept : bool.
-        show          : hiển thị biểu đồ.
-        save_path     : lưu biểu đồ nếu không None.
-
-        Returns
-        -------
-        (lambdas, coef_paths)
-        """
-        if lambdas is None:
-            lambdas = np.logspace(-4, 0, 50)
-
-        coef_paths = []
-        for lam in lambdas:
-            m = LassoRegressor(lam=lam, fit_intercept=fit_intercept,
-                               max_iter=5000, tol=1e-8).fit(X, y)
-            coef_paths.append(m.beta_hat)
-        coef_paths = np.array(coef_paths)
-
-        fig, ax = plt.subplots(figsize=(9, 5))
-        start = 1 if fit_intercept else 0
-        for j in range(start, coef_paths.shape[1]):
-            ax.plot(lambdas, coef_paths[:, j], label=f"beta_{j}")
-        ax.set_xscale("log")
-        ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
-        ax.set_xlabel("lambda (log scale)")
-        ax.set_ylabel("Gia tri he so beta_hat")
-        ax.set_title("Lasso Path: He so hoi quy theo lambda")
-        ax.legend(loc="upper right", fontsize=8, ncol=2)
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        if save_path:
-            fig.savefig(save_path, dpi=120)
-        if show:
-            plt.show()
-        plt.close(fig)
-
-        return lambdas, coef_paths
+    return lambdas, coef_paths
 
 
 # ============================================================
@@ -508,7 +369,7 @@ def verify_ridge_sklearn(
     tol: float = 1e-6,
 ) -> dict:
     """
-    So sanh RidgeRegressor (scratch) voi sklearn.linear_model.Ridge.
+    So sanh ridge_fit (scratch) voi sklearn.linear_model.Ridge.
 
     Parameters
     ----------
@@ -522,8 +383,8 @@ def verify_ridge_sklearn(
     """
     from sklearn.linear_model import Ridge
 
-    model_scratch  = RidgeRegressor(lam=lam).fit(X, y)
-    beta_scratch   = model_scratch.beta_hat
+    res_scratch    = ridge_fit(X, y, lam=lam)
+    beta_scratch   = res_scratch["beta_hat"]
 
     model_sk       = Ridge(alpha=lam, fit_intercept=True)
     model_sk.fit(X, y)
@@ -552,7 +413,7 @@ def verify_lasso_sklearn(
     tol: float = 1e-4,
 ) -> dict:
     """
-    So sanh LassoRegressor (scratch) voi sklearn.linear_model.Lasso.
+    So sanh lasso_fit (scratch) voi sklearn.linear_model.Lasso.
 
     Quy uoc: ca hai deu toi uu (1/2n)||y - Xb||^2 + lam||b||_1
     (sklearn dung alpha = lam, normalize theo n trong ham mat mat).
@@ -569,8 +430,8 @@ def verify_lasso_sklearn(
     """
     from sklearn.linear_model import Lasso
 
-    model_scratch = LassoRegressor(lam=lam, max_iter=10000, tol=1e-8).fit(X, y)
-    beta_scratch  = model_scratch.beta_hat
+    res_scratch = lasso_fit(X, y, lam=lam, max_iter=10000, tol=1e-8)
+    beta_scratch  = res_scratch["beta_hat"]
 
     model_sk      = Lasso(alpha=lam, fit_intercept=True, max_iter=10000, tol=1e-8)
     model_sk.fit(X, y)
@@ -590,3 +451,42 @@ def verify_lasso_sklearn(
 
     return {"beta_scratch": beta_scratch, "beta_sklearn": beta_sklearn,
             "max_diff": max_diff, "passed": passed}
+
+
+# ============================================================
+# DEMO
+# ============================================================
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("RIDGE & LASSO IMPLEMENTATION DEMO")
+    print("=" * 60)
+
+    np.random.seed(42)
+    n, p  = 100, 5
+    X_demo = np.random.randn(n, p)
+    beta_true = np.array([3.0, 1.5, 0.0, -2.0, 0.5])
+    y_demo    = X_demo @ beta_true + np.random.randn(n) * 0.5
+
+    print(f"\n[Demo] n={n}, p={p}")
+    print(f"  beta_true = {beta_true}")
+
+    print("\n[1] Ridge Regression (lambda=1.0)")
+    res_r = ridge_fit(X_demo, y_demo, lam=1.0)
+    print(f"  beta_hat = {res_r['beta_hat']}")
+    print(f"  RSS      = {res_r['rss']:.4f}")
+
+    print("\n[2] Lasso Regression (lambda=0.1)")
+    res_l = lasso_fit(X_demo, y_demo, lam=0.1)
+    print(f"  beta_hat   = {res_l['beta_hat']}")
+    print(f"  RSS        = {res_l['rss']:.4f}")
+    print(f"  n_nonzero  = {res_l['n_nonzero']}/{p}")
+
+    verify_ridge_sklearn(X_demo, y_demo, lam=1.0)
+    verify_lasso_sklearn(X_demo, y_demo, lam=0.1)
+
+    lams_r, paths_r = ridge_trace(X_demo, y_demo, show=True)
+    lams_l, paths_l = lasso_path(X_demo, y_demo,  show=True)
+    print(f"\n  Ridge trace : {len(lams_r)} lambda, paths shape = {paths_r.shape}")
+    print(f"  Lasso path  : {len(lams_l)} lambda, paths shape = {paths_l.shape}")
+    print("\nDemo hoan tat.")
