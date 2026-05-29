@@ -400,7 +400,7 @@ def verify_ridge_sklearn(
         print(f"  {label:>12}  {b_s:>13.6f}  {b_sk:>13.6f}  {abs(b_s - b_sk):>13.2e}")
     print(f"  lambda = {lam}")
     print(f"  Max |beta_scratch - beta_sklearn| = {max_diff:.2e}")
-    print(f"  Ket qua khop (tol={tol:.0e})       : {'PASS' if passed else 'FAIL'}")
+    print(f"  Kết quả khớp (tol={tol:.0e})       : {'PASS' if passed else 'FAIL'}")
 
     return {"beta_scratch": beta_scratch, "beta_sklearn": beta_sklearn,
             "max_diff": max_diff, "passed": passed}
@@ -447,7 +447,7 @@ def verify_lasso_sklearn(
         print(f"  {label:>12}  {b_s:>13.6f}  {b_sk:>13.6f}  {abs(b_s - b_sk):>13.2e}")
     print(f"  lambda = {lam}")
     print(f"  Max |beta_scratch - beta_sklearn| = {max_diff:.2e}")
-    print(f"  Ket qua khop (tol={tol:.0e})      : {'PASS' if passed else 'FAIL'}")
+    print(f"  Kết quả khớp (tol={tol:.0e})      : {'PASS' if passed else 'FAIL'}")
 
     return {"beta_scratch": beta_scratch, "beta_sklearn": beta_sklearn,
             "max_diff": max_diff, "passed": passed}
