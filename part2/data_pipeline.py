@@ -316,7 +316,7 @@ class DataPipeline:
     # PHẦN B: Encoding
     # ------------------------------------------------------------------
     def _fit_encoding(self, X: pd.DataFrame):
-        cat_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
+        cat_cols = X.select_dtypes(include=['object', 'str', 'category']).columns.tolist()
 
         if self.encoding == 'auto':
             self._ordinal_cols_ = [c for c in ORDINAL_MAPS if c in cat_cols]
