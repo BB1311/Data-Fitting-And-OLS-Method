@@ -7,6 +7,7 @@ Unit tests cho OLSFull.
 
 import numpy as np
 import pandas as pd
+import pytest
 import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -88,6 +89,24 @@ def test_evaluate_noisy_metrics_valid():
     assert m["rmse"] > 0
 
 
+def test_evaluate_usd_scale():
+    """evaluate() phải trả về sai số bằng USD, không phải log-scale."""
+    # Giả lập giá trị log1p của 200k và 225k USD
+    # Dùng 2 điểm để TSS != 0 (compute_r2 raise ValueError nếu TSS=0)
+    y_true = np.array([np.log1p(200_000), np.log1p(300_000)])
+    y_pred = np.array([np.log1p(225_000), np.log1p(325_000)])
+
+    # Inject thẳng vô hàm evaluate (giả lập)
+    model = OLSFull(verbose=False)
+    model._model = type('MockModel', (), {'predict': lambda self, X: y_pred})()
+
+    metrics = model.evaluate(pd.DataFrame({'x': [1, 2]}), y_true, verbose=False)
+
+    # Mỗi điểm lệch 25k → MAE = RMSE = 25000
+    assert abs(metrics["mae"]  - 25_000) < 1.0, f"MAE sai scale: {metrics['mae']}"
+    assert abs(metrics["rmse"] - 25_000) < 1.0, f"RMSE sai scale: {metrics['rmse']}"
+
+
 def test_coef_table_shape_and_columns():
     """coef_table() — shape và tên cột đúng."""
     X, y = _noisy_data()
@@ -125,34 +144,5 @@ def test_to_result_metrics_consistent():
     assert abs(res["metrics"]["rmse"] - metrics["rmse"]) < 1e-10
 
 
-# ══════════════════════════════════════════════════════════════════════
-# RUNNER
-# ══════════════════════════════════════════════════════════════════════
-
-def _run_all():
-    tests = [
-        test_fit_correct_coefficients,
-        test_fit_ndarray_feature_names,
-        test_predict_perfect_fit,
-        test_predict_dataframe_ndarray_equal,
-        test_evaluate_perfect_metrics,
-        test_evaluate_noisy_metrics_valid,
-        test_coef_table_shape_and_columns,
-        test_coef_table_valid_statistics,
-        test_to_result_keys_and_lam,
-        test_to_result_metrics_consistent,
-    ]
-    passed = failed = 0
-    for t in tests:
-        try:
-            t()
-            print(f"  [PASS] {t.__name__}")
-            passed += 1
-        except Exception as e:
-            print(f"  [FAIL] {t.__name__}: {e}")
-            failed += 1
-    print(f"\n  {passed}/{passed+failed} tests PASS")
-
-
 if __name__ == "__main__":
-    _run_all()
+    pytest.main([__file__, "-v"])

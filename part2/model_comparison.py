@@ -78,15 +78,21 @@ class OLSFull:
         self._check_fitted()
         y_arr  = np.asarray(y, dtype=float).ravel()
         y_pred = self.predict(X)
+
+        # Inverse log-transform về scale gốc (USD) trước khi tính sai số
+        y_real      = np.expm1(y_arr)
+        y_pred_real = np.expm1(y_pred)
         metrics = {
-            "mae"  : _mae(y_arr, y_pred),
-            "rmse" : _rmse(y_arr, y_pred),
-            "r2"   : compute_r2(y_arr, y_pred),
+            "mae"  : _mae(y_real, y_pred_real),   # đơn vị: USD
+            "rmse" : _rmse(y_real, y_pred_real),  # đơn vị: USD
+            "r2"   : compute_r2(y_arr, y_pred),   # log-scale, unit-free
             "label": "OLS Full",
         }
         if verbose:
-            print(f"  {'OLS Full':<25} MAE = {metrics['mae']:.4f} | "
-                  f"RMSE = {metrics['rmse']:.4f} | R² = {metrics['r2']:.4f}")
+            print(f"  {'OLS Full':<25} "
+                  f"MAE = ${metrics['mae']:>10,.0f} | "
+                  f"RMSE = ${metrics['rmse']:>10,.0f} | "
+                  f"R² = {metrics['r2']:.4f}")
         return metrics
 
     # ── COEF TABLE ────────────────────────────────────────────────────
