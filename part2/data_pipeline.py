@@ -37,7 +37,7 @@ Usage
     X_train_clean, y_train_clean = pipe.fit_transform(X_train, y_train)
     X_test_clean  = pipe.transform(X_test)
 
-    vif_df = run_vif_check(X_train_clean, threshold=10)
+    vif_df = run_vif_check(X_train_clean)
     X_train_no_mc, dropped = pipe.drop_high_vif(X_train_clean, threshold=10)
 """
 
@@ -45,7 +45,7 @@ Usage
 # ======================================================================
 # HÀM CẦU NỐI: VIF CHECK
 # ======================================================================
-def run_vif_check(X: pd.DataFrame, threshold: float = 10.0) -> pd.DataFrame:
+def run_vif_check(X: pd.DataFrame) -> pd.DataFrame:
     """
     Cầu nối: Chuyển DataFrame thành Numpy array để đưa vào hàm vif (Part 1), 
     sau đó trả về DataFrame chứa tên cột và điểm VIF tương ứng, sắp xếp giảm dần.
@@ -529,7 +529,7 @@ class DataPipeline:
         dropped = []
         for iteration in range(max_iter):
             # Gọi hàm cầu nối đã viết ở trên
-            vif_df = run_vif_check(X, threshold=threshold)
+            vif_df = run_vif_check(X)
             
             # Cột có VIF cao nhất đang nằm ở dòng đầu tiên
             worst = vif_df.iloc[0]

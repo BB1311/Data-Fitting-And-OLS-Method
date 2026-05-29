@@ -8,7 +8,12 @@ from part2.model_comparison import (
     _fit_ols,
     _safe_model_metrics,
     ols_coefficient_table,
-    OLSFeatureSelector
+    evaluate_model,
+    train_test_split_df,
+    OLSFeatureSelector,
+    OLSBasic,
+    RidgeCV,
+    LassoCV,
 )
 
 # --- Tests for _as_numeric_dataframe ---
@@ -173,3 +178,172 @@ def test_feature_selector_invalid_method():
     selector = OLSFeatureSelector(method="invalid_method", verbose=False)
     with pytest.raises(ValueError, match="method phải là"):
         selector.fit(X, y)
+
+
+# --- Tests for evaluate_model ---
+def test_evaluate_model_basic():
+    """Kiểm tra hàm evaluate_model trả đúng format và giá trị hợp lệ."""
+    y_true = np.array([1, 2, 3, 4, 5])
+    y_pred = np.array([1.1, 1.9, 3.2, 3.8, 5.1])
+    result = evaluate_model(y_true, y_pred)
+    assert "mae" in result
+    assert "rmse" in result
+    assert "r2" in result
+    assert result["mae"] >= 0
+    assert result["rmse"] >= 0
+    assert result["r2"] > 0.9
+
+
+def test_evaluate_model_perfect():
+    """Kiểm tra evaluate_model khi y_pred == y_true."""
+    y = np.array([1, 2, 3])
+    result = evaluate_model(y, y)
+    assert result["mae"] == 0.0
+    assert result["rmse"] == 0.0
+    assert result["r2"] == 1.0
+
+
+# --- Tests for train_test_split_df ---
+def test_train_test_split_df_sizes():
+    """Kiểm tra tỷ lệ chia train/test đúng."""
+    X = pd.DataFrame({"A": range(100), "B": range(100)})
+    y = pd.Series(range(100))
+    X_train, X_test, y_train, y_test = train_test_split_df(X, y, test_size=0.2)
+    assert len(X_train) == 80
+    assert len(X_test) == 20
+    assert len(y_train) == 80
+    assert len(y_test) == 20
+
+
+def test_train_test_split_df_types():
+    """Kiểm tra kiểu dữ liệu được giữ nguyên sau split."""
+    X = pd.DataFrame({"A": [1, 2, 3, 4, 5]})
+    y = pd.Series([10, 20, 30, 40, 50])
+    X_train, X_test, y_train, y_test = train_test_split_df(X, y, test_size=0.4)
+    assert isinstance(X_train, pd.DataFrame)
+    assert isinstance(y_train, pd.Series)
+
+
+# --- Tests for OLSBasic ---
+def test_ols_basic_fit_predict():
+    """Kiểm tra OLSBasic fit và predict cơ bản."""
+    X1 = np.arange(20, dtype=float)
+    X2 = np.array([0.5, -0.2, 0.1, 0.8, -0.5, 0.3, 0.9, -0.7, 0.2, -0.4, 0.6, -0.1, 0.4, 0.7, -0.9, 0.0, -0.3, 0.8, -0.6, 0.5])
+    X = pd.DataFrame({"X1": X1, "X2": X2})
+    y = 2.0 * X1 + 1.0 + 0.1 * X2
+    model = OLSBasic(verbose=False)
+    model.fit(X, y)
+    y_pred = model.predict(X)
+    assert len(y_pred) == 20
+    assert model.coef_table_ is not None
+    assert model.metrics_["r2"] > 0.9
+
+
+def test_ols_basic_evaluate():
+    """Kiểm tra OLSBasic evaluate trả dict đúng format."""
+    X = pd.DataFrame({"X1": [1.0, 2, 3, 4, 5, 6, 7, 8, 9, 10]})
+    y = [2.1, 4.0, 5.9, 8.1, 10.0, 11.8, 14.1, 16.0, 17.9, 20.1]
+    model = OLSBasic(verbose=False).fit(X, y)
+    result = model.evaluate(X, y)
+    assert "mae" in result and "rmse" in result and "r2" in result
+    assert result["r2"] > 0.99
+
+
+# --- Tests for OLSFeatureSelector predict/evaluate ---
+def test_feature_selector_predict():
+    """Kiểm tra OLSFeatureSelector.predict hoạt động."""
+    X = pd.DataFrame({
+        "X1": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+        "X2": [5.0, 3.0, 8.0, 1.0, 7.0, 2.0, 9.0, 4.0, 6.0, 10.0],
+    })
+    y = [2.1, 4.0, 5.9, 8.1, 10.0, 11.8, 14.1, 16.0, 17.9, 20.1]
+    selector = OLSFeatureSelector(method="pvalue", verbose=False)
+    selector.fit(X, y)
+    y_pred = selector.predict(X)
+    assert len(y_pred) == 10
+
+
+def test_feature_selector_evaluate():
+    """Kiểm tra OLSFeatureSelector.evaluate trả dict."""
+    X = pd.DataFrame({
+        "X1": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+        "X2": [5.0, 3.0, 8.0, 1.0, 7.0, 2.0, 9.0, 4.0, 6.0, 10.0],
+    })
+    y = [2.1, 4.0, 5.9, 8.1, 10.0, 11.8, 14.1, 16.0, 17.9, 20.1]
+    selector = OLSFeatureSelector(method="pvalue", verbose=False)
+    selector.fit(X, y)
+    result = selector.evaluate(X, y)
+    assert "r2" in result
+
+
+# --- Tests for RidgeCV ---
+def test_ridge_cv_fit_predict():
+    """Kiểm tra RidgeCV fit, chọn lambda, và predict."""
+    X1 = np.arange(30, dtype=float)
+    X2 = np.array([
+        0.5, -0.2, 0.1, 0.8, -0.5, 0.3, 0.9, -0.7, 0.2, -0.4,
+        0.6, -0.1, 0.4, 0.7, -0.9, 0.0, -0.3, 0.8, -0.6, 0.5,
+        0.1, -0.8, 0.9, -0.2, 0.3, 0.7, -0.5, 0.4, -0.1, 0.6
+    ])
+    X = pd.DataFrame({"X1": X1, "X2": X2})
+    y = 2.0 * X1 + 1.0 + 0.5 * X2
+    model = RidgeCV(lambdas=np.logspace(-2, 2, 10), k_folds=3, verbose=False)
+    model.fit(X, y)
+    assert model.best_lambda_ is not None
+    assert model.cv_results_ is not None
+    assert len(model.cv_results_) == 10
+    y_pred = model.predict(X)
+    assert len(y_pred) == 30
+
+
+def test_ridge_cv_evaluate():
+    """Kiểm tra RidgeCV evaluate trả dict đúng format."""
+    X1 = np.arange(30, dtype=float)
+    X2 = np.array([
+        0.5, -0.2, 0.1, 0.8, -0.5, 0.3, 0.9, -0.7, 0.2, -0.4,
+        0.6, -0.1, 0.4, 0.7, -0.9, 0.0, -0.3, 0.8, -0.6, 0.5,
+        0.1, -0.8, 0.9, -0.2, 0.3, 0.7, -0.5, 0.4, -0.1, 0.6
+    ])
+    X = pd.DataFrame({"X1": X1, "X2": X2})
+    y = 2.0 * X1 + 1.0 + 0.5 * X2
+    model = RidgeCV(lambdas=np.logspace(-2, 2, 5), k_folds=3, verbose=False)
+    model.fit(X, y)
+    result = model.evaluate(X, y)
+    assert "r2" in result
+    assert result["r2"] > 0.9
+
+
+# --- Tests for LassoCV ---
+def test_lasso_cv_fit_predict():
+    """Kiểm tra LassoCV fit, chọn lambda, và predict."""
+    X1 = np.arange(30, dtype=float)
+    X2 = np.array([
+        0.5, -0.2, 0.1, 0.8, -0.5, 0.3, 0.9, -0.7, 0.2, -0.4,
+        0.6, -0.1, 0.4, 0.7, -0.9, 0.0, -0.3, 0.8, -0.6, 0.5,
+        0.1, -0.8, 0.9, -0.2, 0.3, 0.7, -0.5, 0.4, -0.1, 0.6
+    ])
+    X = pd.DataFrame({"X1": X1, "X2": X2})
+    y = 2.0 * X1 + 1.0 + 0.5 * X2
+    model = LassoCV(lambdas=np.logspace(-4, -1, 10), k_folds=3, verbose=False)
+    model.fit(X, y)
+    assert model.best_lambda_ is not None
+    assert model.n_nonzero_ is not None
+    y_pred = model.predict(X)
+    assert len(y_pred) == 30
+
+
+def test_lasso_cv_evaluate():
+    """Kiểm tra LassoCV evaluate trả dict đúng format."""
+    X1 = np.arange(30, dtype=float)
+    X2 = np.array([
+        0.5, -0.2, 0.1, 0.8, -0.5, 0.3, 0.9, -0.7, 0.2, -0.4,
+        0.6, -0.1, 0.4, 0.7, -0.9, 0.0, -0.3, 0.8, -0.6, 0.5,
+        0.1, -0.8, 0.9, -0.2, 0.3, 0.7, -0.5, 0.4, -0.1, 0.6
+    ])
+    X = pd.DataFrame({"X1": X1, "X2": X2})
+    y = 2.0 * X1 + 1.0 + 0.5 * X2
+    model = LassoCV(lambdas=np.logspace(-4, -1, 5), k_folds=3, verbose=False)
+    model.fit(X, y)
+    result = model.evaluate(X, y)
+    assert "r2" in result
+    assert result["r2"] > 0.5
