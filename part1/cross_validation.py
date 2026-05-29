@@ -1,6 +1,12 @@
+import sys
+from pathlib import Path
+
+# Thêm thư mục gốc của dự án vào sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import numpy as np
 from part1.ols_implementation import OLSRegressor, compute_r2
-from part1.ridge_lasso import RidgeRegressor, LassoRegressor
+from part1.ridge_lasso import ridge_fit, lasso_fit
 
 # HÀM TIỆN ÍCH
 def _mse(y_true, y_pred):
@@ -91,11 +97,13 @@ def kfold_cv(
             reg    = OLSRegressor(fit_intercept=True).fit(X_train, y_train)
             y_pred = reg.predict(X_val)
         elif model == "ridge":
-            reg    = RidgeRegressor(lam=lam, fit_intercept=True).fit(X_train, y_train)
-            y_pred = reg.predict(X_val)
+            res   = ridge_fit(X_train, y_train, lam=lam)
+            beta  = res["beta_hat"]
+            y_pred = np.column_stack([np.ones(len(X_val)), X_val]) @ beta
         else:  # lasso
-            reg    = LassoRegressor(lam=lam, fit_intercept=True).fit(X_train, y_train)
-            y_pred = reg.predict(X_val)
+            res   = lasso_fit(X_train, y_train, lam=lam)
+            beta  = res["beta_hat"]
+            y_pred = np.column_stack([np.ones(len(X_val)), X_val]) @ beta
 
         fold_mse.append(_mse(y_val, y_pred))
         fold_rmse.append(_rmse(y_val, y_pred))
@@ -199,6 +207,103 @@ def compare_models_cv(
         "best_lasso"    : lasso_results[best_lasso_idx],
     }
 
+
+# KIỂM CHỨNG kfold_cv
+def verify_kfold_cv_loocv_formula(verbose: bool = True) -> dict:
+    """
+    Kiểm chứng 1 — LOOCV (k=n) khớp với công thức đóng hat matrix.
+
+    Với Linear Regression, LOOCV có thể tính qua công thức đóng:
+
+        CV_LOO = (1/n) Σᵢ [eᵢ / (1 - hᵢᵢ)]²
+
+    trong đó eᵢ là residual khi fit trên toàn bộ dữ liệu,
+    hᵢᵢ là diagonal của hat matrix H = X(XᵀX)⁻¹Xᵀ.
+    """
+    rng = np.random.default_rng(0)
+    n, p = 20, 3
+    X = rng.standard_normal((n, p))
+    y = X @ np.array([1.5, -2.0, 0.8]) + 0.5 * rng.standard_normal(n)
+
+    # LOOCV từ scratch (k = n)
+    result = kfold_cv(X, y, k=n, model="ols", random_state=0)
+
+    # Công thức đóng: fit trên toàn dữ liệu → hat matrix → LOOCV
+    ones     = np.ones((n, 1))
+    X_design = np.hstack([ones, X])                            # (n, p+1)
+    XtX_inv  = np.linalg.inv(X_design.T @ X_design)
+    H        = X_design @ XtX_inv @ X_design.T                # hat matrix
+    h_diag   = np.diag(H)                                     # leverage
+    beta     = XtX_inv @ X_design.T @ y
+    residuals = y - X_design @ beta
+    loocv_formula = float(np.mean((residuals / (1 - h_diag)) ** 2))
+
+    diff   = abs(result["cv_mse"] - loocv_formula)
+    passed = diff < 1e-8
+
+    if verbose:
+        print("\n[verify_kfold_cv_loocv_formula]")
+        print(f"  kfold_cv(k=n)   = {result['cv_mse']:.10f}")
+        print(f"  closed-form LOO = {loocv_formula:.10f}")
+        print(f"  |delta|         = {diff:.2e}  (expected < 1e-8)")
+        print(f"  Result : {'PASS' if passed else 'FAIL'}")
+    return {
+        "cv_mse_scratch": result["cv_mse"],
+        "cv_mse_formula": loocv_formula,
+        "diff"          : diff,
+        "passed"        : passed,
+    }
+
+
+def verify_kfold_cv_vs_sklearn(k: int = 5, verbose: bool = True) -> dict:
+    """
+    Kiểm chứng 2 — cv_mse khớp với sklearn khi dùng đúng fold indices.
+
+    Dùng return_indices=True để lấy val_indices từ kfold_cv, sau đó
+    tái hiện CV MSE trên đúng các fold đó bằng sklearn.LinearRegression.
+    """
+    try:
+        from sklearn.linear_model import LinearRegression
+    except ImportError:
+        if verbose:
+            print("\n[verify_kfold_cv_vs_sklearn] sklearn not installed — skipped.")
+        return {"cv_mse_scratch": None, "cv_mse_sklearn": None,
+                "diff": None, "passed": None}
+
+    rng = np.random.default_rng(7)
+    n, p = 50, 4
+    X = rng.standard_normal((n, p))
+    y = X @ np.array([2.0, -1.0, 0.5, 1.5]) + rng.standard_normal(n)
+
+    result = kfold_cv(X, y, k=k, model="ols",
+                      random_state=42, return_indices=True)
+
+    # Tái hiện CV MSE trên đúng fold indices bằng sklearn
+    all_idx      = np.arange(n)
+    sk_fold_mses = []
+    for val_idx in result["val_indices"]:
+        train_idx = np.setdiff1d(all_idx, val_idx)
+        sk        = LinearRegression().fit(X[train_idx], y[train_idx])
+        y_pred    = sk.predict(X[val_idx])
+        sk_fold_mses.append(float(np.mean((y[val_idx] - y_pred) ** 2)))
+
+    sk_cv_mse = float(np.mean(sk_fold_mses))
+    diff      = abs(result["cv_mse"] - sk_cv_mse)
+    passed    = diff < 1e-8
+
+    if verbose:
+        print("\n[verify_kfold_cv_vs_sklearn]")
+        print(f"  kfold_cv scratch     = {result['cv_mse']:.10f}")
+        print(f"  sklearn (same folds) = {sk_cv_mse:.10f}")
+        print(f"  |delta|              = {diff:.2e}  (expected < 1e-8)")
+        print(f"  Result : {'PASS' if passed else 'FAIL'}")
+    return {
+        "cv_mse_scratch": result["cv_mse"],
+        "cv_mse_sklearn": sk_cv_mse,
+        "diff"          : diff,
+        "passed"        : passed,
+    }
+    
 # DEMO
 if __name__ == "__main__":
     rng = np.random.default_rng(42)

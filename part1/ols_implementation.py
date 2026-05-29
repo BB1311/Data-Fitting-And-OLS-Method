@@ -541,13 +541,15 @@ def verify_with_sklearn(X: np.ndarray, y: np.ndarray) -> dict:
     }
     
 
-def verify_hat_matrix_numpy(X: np.ndarray, H_scratch: np.ndarray, add_intercept: bool = True) -> dict:
+def verify_hat_matrix_numpy(X: np.ndarray, add_intercept: bool = True) -> dict:
     """
     Xác minh Ma trận chiếu (Hat Matrix) bằng numpy (dùng pinv).
     """
     X = np.asarray(X, dtype=float)
     if X.ndim == 1:
         X = X.reshape(-1, 1)
+        
+    H_scratch, _ = hat_matrix(X, add_intercept=add_intercept, return_idempotent=True)
         
     if add_intercept:
         X_design = np.hstack([np.ones((X.shape[0], 1)), X])
@@ -559,21 +561,36 @@ def verify_hat_matrix_numpy(X: np.ndarray, H_scratch: np.ndarray, add_intercept:
     max_diff = float(np.max(np.abs(H_scratch - H_numpy)))
     passed = max_diff < 1e-8
     
+    print("\n         VERIFICATION: Hat Matrix Scratch vs numpy pinv")
+    print(f"  Max |H_scratch - H_numpy| = {max_diff:.2e}")
+    tol = 1e-8
+    print(f"  Kết quả khớp (tol={tol:.0e})      : {'PASS' if passed else 'FAIL'}")
+    
     return {
+        "H_scratch": H_scratch,
         "H_numpy": H_numpy,
         "max_diff": max_diff,
         "passed": passed
     }
 
 
-def verify_coef_inference_numpy(X: np.ndarray, beta_hat: np.ndarray, sigma2: float, 
-                                se_scratch: np.ndarray, t_stats_scratch: np.ndarray, 
-                                p_values_scratch: np.ndarray) -> dict:
+def verify_coef_inference_numpy(X: np.ndarray, y: np.ndarray) -> dict:
     """
     Xác minh các chỉ số suy diễn thống kê (SE, t-stats, p-values) bằng numpy và scipy.stats.
     """
     X = np.asarray(X, dtype=float)
-    beta_hat = np.asarray(beta_hat, dtype=float).ravel()
+    y = np.asarray(y, dtype=float).ravel()
+    
+    # Lấy các giá trị scratch
+    res = ols_fit(X, y)
+    beta_hat = res["beta_hat"]
+    sigma2 = res["sigma2_hat"]
+    
+    inf_scratch = coef_inference(X, y, beta_hat, sigma2, verbose=False)
+    se_scratch = inf_scratch["se"]
+    t_stats_scratch = inf_scratch["t_stats"]
+    p_values_scratch = inf_scratch["p_values"]
+    
     n = X.shape[0]
     
     if X.shape[1] == len(beta_hat) - 1:
@@ -605,7 +622,16 @@ def verify_coef_inference_numpy(X: np.ndarray, beta_hat: np.ndarray, sigma2: flo
 
     passed = passed_se and passed_t and passed_p
     
+    print("\n         VERIFICATION: Inference Scratch vs numpy/scipy")
+    print(f"  Max |SE_scratch - SE_numpy|       = {max_diff_se:.2e}")
+    print(f"  Max |t_scratch - t_numpy|         = {max_diff_t:.2e}")
+    print(f"  Max |p_scratch - p_numpy|         = {max_diff_p:.2e}")
+    print(f"  Kết quả khớp                      : {'PASS' if passed else 'FAIL'}")
+
     return {
+        "se_scratch": se_scratch,
+        "t_stats_scratch": t_stats_scratch,
+        "p_values_scratch": p_values_scratch,
         "se_numpy": se_np,
         "t_stats_numpy": t_stats_np,
         "p_values_numpy": p_values_np,
@@ -616,11 +642,15 @@ def verify_coef_inference_numpy(X: np.ndarray, beta_hat: np.ndarray, sigma2: flo
     }
 
 
-def verify_vif_sklearn(X: np.ndarray, vif_scratch: np.ndarray) -> dict:
+def verify_vif_sklearn(X: np.ndarray) -> dict:
     """
     Xác minh VIF bằng mô hình LinearRegression từ sklearn.
     """
     X = np.asarray(X, dtype=float)
+    
+    # Tính VIF scratch
+    vif_scratch = vif(X, verbose=False)
+    
     p = X.shape[1]
     vif_sklearn = np.zeros(p)
     
@@ -647,47 +677,14 @@ def verify_vif_sklearn(X: np.ndarray, vif_scratch: np.ndarray) -> dict:
     max_diff = float(np.max(diffs))
     passed = max_diff < 1e-8
     
+    print("\n         VERIFICATION: VIF Scratch vs sklearn")
+    print(f"  Max |VIF_scratch - VIF_sklearn| = {max_diff:.2e}")
+    tol = 1e-8
+    print(f"  Kết quả khớp (tol={tol:.0e})        : {'PASS' if passed else 'FAIL'}")
+    
     return {
+        "vif_scratch": vif_scratch,
         "vif_sklearn": vif_sklearn,
         "max_diff": max_diff,
         "passed": passed
     }
-
-
-if __name__ == "__main__":
-    print("OLS IMPLEMENTATION DEMO")
-
-    np.random.seed(42)
-    n = 150
-    X_demo = np.random.randn(n, 3)
-    beta_true = np.array([5.0, 2.0, -1.5, 0.8])
-    y_demo = beta_true[0] + X_demo @ beta_true[1:] + np.random.randn(n)
-
-    print(f"\n[Demo] n={n}, p=3, β_true={beta_true}")
-
-    res = ols_fit(X_demo, y_demo)
-    print(f"\nols_fit() → β̂={res['beta_hat']}, σ̂²={res['sigma2_hat']:.4f}")
-
-    model = OLSRegressor().fit(X_demo, y_demo)
-    y_hat_demo = model.predict(X_demo)
-    print(f"OLSRegressor → β̂={model.beta_hat}")
-
-    model_metrics(y_demo, y_hat_demo, p=3, verbose=True)
-    verify_with_sklearn(X_demo, y_demo)
-
-    print("\n" + "="*50)
-    print("DEMO: CÁC HÀM NÂNG CAO (HAT, INFERENCE, VIF)")
-    print("="*50)
-
-    # Minh họa Hat Matrix
-    print("\n1. HAT MATRIX")
-    H, is_idemp = hat_matrix(X_demo, add_intercept=True)
-    print(f"  -> Kích thước ma trận chiếu H: {H.shape}")
-    print(f"  -> Ma trận H có tính lũy đẳng (H^2 = H) không?: {is_idemp}")
-
-    # Minh họa Suy diễn Thống kê (t-test, p-value, CI)
-    # Lưu ý: truyền sigma2_hat từ dict 'res' hoặc thuộc tính của 'model' đều được
-    coef_inference(X_demo, y_demo, model.beta_hat, model.sigma2_hat)
-
-    # Minh họa tính VIF
-    vif(X_demo)
