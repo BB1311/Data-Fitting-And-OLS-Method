@@ -150,7 +150,6 @@ def _safe_model_metrics(y, y_hat, p):
         df_resid = n - p - 1
         r2 = np.nan if tss == 0 else 1.0 - rss / tss
         r2_adj = np.nan if df_resid <= 0 or tss == 0 else 1.0 - (n - 1) / df_resid * (1.0 - r2)
-        # Gọi hàm tính AIC/BIC từ part1 cho fallback
         aic = compute_aic(n, rss, p)
         bic = compute_bic(n, rss, p)
 
