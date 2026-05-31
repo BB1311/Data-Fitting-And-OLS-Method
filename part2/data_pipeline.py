@@ -548,7 +548,7 @@ class DataPipeline:
         return X, dropped
 
     # ------------------------------------------------------------------
-    # PHẦN G: Inverse transform target (log-space → giá gốc)
+    # PHẦN G: Inverse transform target (log-space --> giá gốc)
     # ------------------------------------------------------------------
     def inverse_transform_y(self, y_log: np.ndarray | pd.Series) -> np.ndarray:
         """
@@ -576,10 +576,10 @@ class DataPipeline:
 
         Examples
         --------
-        >>> y_pred_log  = model.predict(X_test_clean)          # log-scale
-        >>> y_pred_usd  = pipe.inverse_transform_y(y_pred_log) # USD
-        >>> y_test_usd  = pipe.inverse_transform_y(y_test)     # USD
-        >>> metrics     = evaluate_model(y_test_usd, y_pred_usd, inverse_transform_y=False)
+        y_pred_log  = model.predict(X_test_clean)          # log-scale
+        y_pred_usd  = pipe.inverse_transform_y(y_pred_log) # USD
+        y_test_usd  = pipe.inverse_transform_y(y_test)     # USD
+        metrics     = evaluate_model(y_test_usd, y_pred_usd, inverse_transform_y=False)
         """
         if not self._fitted:
             raise RuntimeError("Pipeline chưa được fit. Gọi fit() hoặc fit_transform() trước.")

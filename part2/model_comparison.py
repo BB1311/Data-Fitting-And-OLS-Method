@@ -20,9 +20,10 @@ from part2.data_pipeline import run_vif_check
 # HÀM HELPER
 # ======================================================================
 
-def evaluate_model(y_true, y_pred):
+def evaluate_model(y_true, y_pred, inverse_transform=False):
     """
     Tính MAE, RMSE, R² giữa y thực và y dự đoán.
+    Nếu inverse_transform=True, sẽ dùng np.expm1() để chuyển về không gian gốc trước khi tính.
 
     Returns
     -------
@@ -30,6 +31,11 @@ def evaluate_model(y_true, y_pred):
     """
     y_true = np.asarray(y_true, dtype=float).ravel()
     y_pred = np.asarray(y_pred, dtype=float).ravel()
+
+    if inverse_transform:
+        y_true = np.expm1(y_true)
+        y_pred = np.expm1(y_pred)
+
     mae = float(np.mean(np.abs(y_true - y_pred)))
     rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
     ss_res = float(np.sum((y_true - y_pred) ** 2))
@@ -245,10 +251,10 @@ class OLSBasic:
             raise ValueError(f"Dữ liệu predict thiếu các biến: {missing}")
         return self.model_.predict(X_df[self.feature_names_].to_numpy())
 
-    def evaluate(self, X, y, feature_names=None):
+    def evaluate(self, X, y, feature_names=None, inverse_transform=False):
         """Tính MAE, RMSE, R² trên tập dữ liệu cho trước."""
         y_pred = self.predict(X, feature_names)
-        return evaluate_model(y, y_pred)
+        return evaluate_model(y, y_pred, inverse_transform=inverse_transform)
 
     def summary(self):
         """In tóm tắt mô hình OLS cơ bản."""
@@ -382,10 +388,10 @@ class OLSFeatureSelector:
         X_sel = self.transform(X, feature_names)
         return self.model_.predict(X_sel.to_numpy())
 
-    def evaluate(self, X, y, feature_names=None):
+    def evaluate(self, X, y, feature_names=None, inverse_transform=False):
         """Tính MAE, RMSE, R² trên tập dữ liệu cho trước."""
         y_pred = self.predict(X, feature_names)
-        return evaluate_model(y, y_pred)
+        return evaluate_model(y, y_pred, inverse_transform=inverse_transform)
 
     def summary(self):
         """In ra tóm tắt thông tin mô hình đã chọn."""
@@ -665,10 +671,10 @@ class RidgeCV:
         X_design = np.hstack([np.ones((X_df.shape[0], 1)), X_df.to_numpy()])
         return X_design @ self.coef_
 
-    def evaluate(self, X, y, feature_names=None):
+    def evaluate(self, X, y, feature_names=None, inverse_transform=False):
         """Tính MAE, RMSE, R² trên tập dữ liệu cho trước."""
         y_pred = self.predict(X, feature_names)
-        return evaluate_model(y, y_pred)
+        return evaluate_model(y, y_pred, inverse_transform=inverse_transform)
 
     def summary(self):
         """In tóm tắt mô hình Ridge CV."""
@@ -790,10 +796,10 @@ class LassoCV:
         X_design = np.hstack([np.ones((X_df.shape[0], 1)), X_df.to_numpy()])
         return X_design @ self.coef_
 
-    def evaluate(self, X, y, feature_names=None):
+    def evaluate(self, X, y, feature_names=None, inverse_transform=False):
         """Tính MAE, RMSE, R² trên tập dữ liệu cho trước."""
         y_pred = self.predict(X, feature_names)
-        return evaluate_model(y, y_pred)
+        return evaluate_model(y, y_pred, inverse_transform=inverse_transform)
 
     def summary(self):
         """In tóm tắt mô hình Lasso CV."""
