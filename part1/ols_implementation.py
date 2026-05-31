@@ -258,6 +258,18 @@ def compute_r2_adj(y: np.ndarray, y_hat: np.ndarray, p: int) -> float:
     r2 = compute_r2(y, y_hat)
     return 1.0 - (n - 1) / (n - p - 1) * (1.0 - r2)
 
+def compute_aic(n: int, rss: float, p: int) -> float:
+    """AIC = n * ln(RSS/n) + 2(p + 2)"""
+    if rss <= 0:
+        return np.nan
+    return n * np.log(rss / n) + 2 * (p + 2)
+
+def compute_bic(n: int, rss: float, p: int) -> float:
+    """BIC = n * ln(RSS/n) + (p + 2) * ln(n)"""
+    if rss <= 0:
+        return np.nan
+    return n * np.log(rss / n) + (p + 2) * np.log(n)
+
 def model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int, verbose: bool = True) -> dict:
     y = np.asarray(y, dtype=float)
     y_hat = np.asarray(y_hat, dtype=float)
@@ -268,6 +280,8 @@ def model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int, verbose: bool = True
     ess = compute_ess(y, y_hat)
     r2 = compute_r2(y, y_hat)
     r2_adj = compute_r2_adj(y, y_hat, p)
+    aic = compute_aic(n, rss, p)
+    bic = compute_bic(n, rss, p)
 
     df_model = p
     df_resid = n - p - 1
@@ -285,6 +299,8 @@ def model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int, verbose: bool = True
         "ess":      ess,
         "r2":       r2,
         "r2_adj":   r2_adj,
+        "aic":      aic,
+        "bic":      bic,
         "f_stat":   f_stat,
         "f_pvalue": f_pvalue,
         "n":        n,
@@ -300,6 +316,8 @@ def model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int, verbose: bool = True
         print(f"  ESS               : {ess:.6f}")
         print(f"  R²                : {r2:.6f}")
         print(f"  R² adjusted       : {r2_adj:.6f}")
+        print(f"  AIC               : {aic:.6f}")
+        print(f"  BIC               : {bic:.6f}")
         print(f"  F-statistic       : {f_stat:.4f}  (df1={df_model}, df2={df_resid})")
         print(f"  F p-value         : {f_pvalue:.6e}")
 
