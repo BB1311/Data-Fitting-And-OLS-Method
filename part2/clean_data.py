@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import builtins
 from pathlib import Path
 
 """
@@ -14,7 +15,7 @@ Quy trình:
 """
 
 
-def clean_data(input_path: str) -> pd.DataFrame:
+def clean_data(input_path: str, verbose: bool = False) -> pd.DataFrame:
     """
     Đọc, làm sạch và trả về DataFrame đã xử lý.
 
@@ -28,6 +29,13 @@ def clean_data(input_path: str) -> pd.DataFrame:
     pd.DataFrame
         DataFrame đã qua toàn bộ pipeline làm sạch, không còn missing values.
     """
+    def _log(*args, **kwargs):
+        if verbose:
+            builtins.print(*args, **kwargs)
+
+    # Giữ nguyên các lệnh print hiện có, nhưng chỉ cho phép in khi `verbose` được bật.
+    print = _log
+
     # ══════════════════════════════════════════════════════════════════════
     # BƯỚC 0: ĐỌC DỮ LIỆU
     # ══════════════════════════════════════════════════════════════════════
@@ -69,10 +77,10 @@ def clean_data(input_path: str) -> pd.DataFrame:
     nzv_cols = ['Utilities', 'Street']
 
     # MS SubClass: dtype int64 nhưng là MÃ LOẠI NHÀ, không có thứ tự số học -> convert sang string (categorical)
-    df['MS SubClass'] = df['MS SubClass'].astype(str)
+    df['MS SubClass'] = df['MS SubClass'].astype(str).astype(object)
 
     # Mo Sold: dtype int64 nhưng mang tính mùa vụ (không có tính tuyến tính) -> convert sang string để One-hot
-    df['Mo Sold'] = df['Mo Sold'].astype(str)
+    df['Mo Sold'] = df['Mo Sold'].astype(str).astype(object)
 
     # Các cột chỉ có ý nghĩa khi kết hợp với biến đã xóa, hoặc quá thưa thớt
     extra_drop = ['Pool Area', 'Misc Val']
@@ -155,6 +163,16 @@ def clean_data(input_path: str) -> pd.DataFrame:
     # BƯỚC 3: XỬ LÝ MISSING CÓ CẤU TRÚC
     # ══════════════════════════════════════════════════════════════════════
     print("\nBƯỚC 3: XỬ LÝ MISSING CÓ CẤU TRÚC")
+
+    # Đảm bảo các cột phân loại thuộc nhóm structural-missing có thể gán an toàn nhãn chuỗi như "None".
+    # Với bộ test tổng hợp rất nhỏ, pandas có thể suy luận các cột này thành float khi toàn bộ giá trị quan sát đều là NaN.
+    structural_cat_cols = [
+        'Mas Vnr Type', 'Fireplace Qu',
+        'Garage Type', 'Garage Finish', 'Garage Qual', 'Garage Cond'
+    ]
+    for col in structural_cat_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(object)
     # ── 3.1. Mas Vnr (Lớp ốp đá/gạch) ──────────────────────────────────
     # Anchor: Mas Vnr Area > 0 HOẶC Type không NaN và khác 'None' => có ốp đá
     # Không thể dùng chỉ một trong hai vì có thể một bên bị bỏ sót
