@@ -1,5 +1,6 @@
 import numpy as np
 from scipy import stats
+from sklearn.linear_model import LinearRegression
 
 def _ols_core_solver(X_design: np.ndarray, y: np.ndarray) -> dict:
     """
@@ -258,6 +259,18 @@ def compute_r2_adj(y: np.ndarray, y_hat: np.ndarray, p: int) -> float:
     r2 = compute_r2(y, y_hat)
     return 1.0 - (n - 1) / (n - p - 1) * (1.0 - r2)
 
+def compute_aic(n: int, rss: float, p: int) -> float:
+    """AIC = n * ln(RSS/n) + 2(p + 2)"""
+    if rss <= 0:
+        return np.nan
+    return n * np.log(rss / n) + 2 * (p + 2)
+
+def compute_bic(n: int, rss: float, p: int) -> float:
+    """BIC = n * ln(RSS/n) + (p + 2) * ln(n)"""
+    if rss <= 0:
+        return np.nan
+    return n * np.log(rss / n) + (p + 2) * np.log(n)
+
 def model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int, verbose: bool = True) -> dict:
     y = np.asarray(y, dtype=float)
     y_hat = np.asarray(y_hat, dtype=float)
@@ -268,6 +281,8 @@ def model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int, verbose: bool = True
     ess = compute_ess(y, y_hat)
     r2 = compute_r2(y, y_hat)
     r2_adj = compute_r2_adj(y, y_hat, p)
+    aic = compute_aic(n, rss, p)
+    bic = compute_bic(n, rss, p)
 
     df_model = p
     df_resid = n - p - 1
@@ -285,6 +300,8 @@ def model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int, verbose: bool = True
         "ess":      ess,
         "r2":       r2,
         "r2_adj":   r2_adj,
+        "aic":      aic,
+        "bic":      bic,
         "f_stat":   f_stat,
         "f_pvalue": f_pvalue,
         "n":        n,
@@ -300,6 +317,8 @@ def model_metrics(y: np.ndarray, y_hat: np.ndarray, p: int, verbose: bool = True
         print(f"  ESS               : {ess:.6f}")
         print(f"  R²                : {r2:.6f}")
         print(f"  R² adjusted       : {r2_adj:.6f}")
+        print(f"  AIC               : {aic:.6f}")
+        print(f"  BIC               : {bic:.6f}")
         print(f"  F-statistic       : {f_stat:.4f}  (df1={df_model}, df2={df_resid})")
         print(f"  F p-value         : {f_pvalue:.6e}")
 
@@ -540,40 +559,150 @@ def verify_with_sklearn(X: np.ndarray, y: np.ndarray) -> dict:
     }
     
 
-if __name__ == "__main__":
-    print("OLS IMPLEMENTATION DEMO")
+def verify_hat_matrix_numpy(X: np.ndarray, add_intercept: bool = True) -> dict:
+    """
+    Xác minh Ma trận chiếu (Hat Matrix) bằng numpy (dùng pinv).
+    """
+    X = np.asarray(X, dtype=float)
+    if X.ndim == 1:
+        X = X.reshape(-1, 1)
+        
+    H_scratch, _ = hat_matrix(X, add_intercept=add_intercept, return_idempotent=True)
+        
+    if add_intercept:
+        X_design = np.hstack([np.ones((X.shape[0], 1)), X])
+    else:
+        X_design = X
+        
+    H_numpy = X_design @ np.linalg.pinv(X_design)
+    
+    max_diff = float(np.max(np.abs(H_scratch - H_numpy)))
+    passed = max_diff < 1e-8
+    
+    print("\n         VERIFICATION: Hat Matrix Scratch vs numpy pinv")
+    print(f"  Max |H_scratch - H_numpy| = {max_diff:.2e}")
+    tol = 1e-8
+    print(f"  Kết quả khớp (tol={tol:.0e})      : {'PASS' if passed else 'FAIL'}")
+    
+    return {
+        "H_scratch": H_scratch,
+        "H_numpy": H_numpy,
+        "max_diff": max_diff,
+        "passed": passed
+    }
 
-    np.random.seed(42)
-    n = 150
-    X_demo = np.random.randn(n, 3)
-    beta_true = np.array([5.0, 2.0, -1.5, 0.8])
-    y_demo = beta_true[0] + X_demo @ beta_true[1:] + np.random.randn(n)
 
-    print(f"\n[Demo] n={n}, p=3, β_true={beta_true}")
+def verify_coef_inference_numpy(X: np.ndarray, y: np.ndarray) -> dict:
+    """
+    Xác minh các chỉ số suy diễn thống kê (SE, t-stats, p-values) bằng numpy và scipy.stats.
+    """
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=float).ravel()
+    
+    # Lấy các giá trị scratch
+    res = ols_fit(X, y)
+    beta_hat = res["beta_hat"]
+    sigma2 = res["sigma2_hat"]
+    
+    inf_scratch = coef_inference(X, y, beta_hat, sigma2, verbose=False)
+    se_scratch = inf_scratch["se"]
+    t_stats_scratch = inf_scratch["t_stats"]
+    p_values_scratch = inf_scratch["p_values"]
+    
+    n = X.shape[0]
+    
+    if X.shape[1] == len(beta_hat) - 1:
+        X_design = np.hstack([np.ones((n, 1)), X.reshape(n, -1)])
+    elif X.shape[1] == len(beta_hat):
+        X_design = X
+    else:
+        raise ValueError("Số lượng cột của X không khớp với kích thước của vector beta_hat.")
+        
+    k = X_design.shape[1]
+    df = n - k
+    
+    XtX_inv_np = np.linalg.pinv(X_design.T @ X_design)
+    var_beta_np = sigma2 * np.diag(XtX_inv_np)
+    se_np = np.sqrt(np.maximum(var_beta_np, 0.0))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        # se_np == 0 và beta != 0 thì t = +/-inf
+        # se_np == 0 và beta == 0 thì t = nan
+        t_stats_np = beta_hat / se_np
+    p_values_np = 2 * (1.0 - stats.t.cdf(np.abs(t_stats_np), df=df))
+    
+    max_diff_se = float(np.nanmax(np.abs(se_scratch - se_np)))
+    max_diff_t = float(np.nanmax(np.abs(t_stats_scratch - t_stats_np)))
+    max_diff_p = float(np.nanmax(np.abs(p_values_scratch - p_values_np)))
 
-    res = ols_fit(X_demo, y_demo)
-    print(f"\nols_fit() → β̂={res['beta_hat']}, σ̂²={res['sigma2_hat']:.4f}")
+    passed_se = np.allclose(se_scratch, se_np, atol=1e-8, rtol=1e-5, equal_nan=True)
+    passed_t = np.allclose(t_stats_scratch, t_stats_np, atol=1e-8, rtol=1e-5, equal_nan=True)
+    passed_p = np.allclose(p_values_scratch, p_values_np, atol=1e-8, rtol=1e-5, equal_nan=True)
 
-    model = OLSRegressor().fit(X_demo, y_demo)
-    y_hat_demo = model.predict(X_demo)
-    print(f"OLSRegressor → β̂={model.beta_hat}")
+    passed = passed_se and passed_t and passed_p
+    
+    print("\n         VERIFICATION: Inference Scratch vs numpy/scipy")
+    print(f"  Max |SE_scratch - SE_numpy|       = {max_diff_se:.2e}")
+    print(f"  Max |t_scratch - t_numpy|         = {max_diff_t:.2e}")
+    print(f"  Max |p_scratch - p_numpy|         = {max_diff_p:.2e}")
+    print(f"  Kết quả khớp                      : {'PASS' if passed else 'FAIL'}")
 
-    model_metrics(y_demo, y_hat_demo, p=3, verbose=True)
-    verify_with_sklearn(X_demo, y_demo)
+    return {
+        "se_scratch": se_scratch,
+        "t_stats_scratch": t_stats_scratch,
+        "p_values_scratch": p_values_scratch,
+        "se_numpy": se_np,
+        "t_stats_numpy": t_stats_np,
+        "p_values_numpy": p_values_np,
+        "max_diff_se": max_diff_se,
+        "max_diff_t": max_diff_t,
+        "max_diff_p": max_diff_p,
+        "passed": passed
+    }
 
-    print("\n" + "="*50)
-    print("DEMO: CÁC HÀM NÂNG CAO (HAT, INFERENCE, VIF)")
-    print("="*50)
 
-    # Minh họa Hat Matrix
-    print("\n1. HAT MATRIX")
-    H, is_idemp = hat_matrix(X_demo, add_intercept=True)
-    print(f"  -> Kích thước ma trận chiếu H: {H.shape}")
-    print(f"  -> Ma trận H có tính lũy đẳng (H^2 = H) không?: {is_idemp}")
-
-    # Minh họa Suy diễn Thống kê (t-test, p-value, CI)
-    # Lưu ý: truyền sigma2_hat từ dict 'res' hoặc thuộc tính của 'model' đều được
-    coef_inference(X_demo, y_demo, model.beta_hat, model.sigma2_hat)
-
-    # Minh họa tính VIF
-    vif(X_demo)
+def verify_vif_sklearn(X: np.ndarray) -> dict:
+    """
+    Xác minh VIF bằng mô hình LinearRegression từ sklearn.
+    """
+    X = np.asarray(X, dtype=float)
+    
+    # Tính VIF scratch
+    vif_scratch = vif(X, verbose=False)
+    
+    p = X.shape[1]
+    vif_sklearn = np.zeros(p)
+    
+    for j in range(p):
+        y_target = X[:, j]
+        X_features = np.delete(X, j, axis=1)
+        
+        model = LinearRegression(fit_intercept=True)
+        model.fit(X_features, y_target)
+        r2 = model.score(X_features, y_target)
+        
+        if r2 >= 1.0 or np.isclose(r2, 1.0):
+            vif_sklearn[j] = np.inf
+        else:
+            vif_sklearn[j] = 1.0 / (1.0 - r2)
+            
+    diffs = []
+    for vs, vsk in zip(vif_scratch, vif_sklearn):
+        if np.isinf(vs) and np.isinf(vsk):
+            diffs.append(0.0)
+        else:
+            diffs.append(abs(vs - vsk))
+            
+    max_diff = float(np.max(diffs))
+    passed = max_diff < 1e-8
+    
+    print("\n         VERIFICATION: VIF Scratch vs sklearn")
+    print(f"  Max |VIF_scratch - VIF_sklearn| = {max_diff:.2e}")
+    tol = 1e-8
+    print(f"  Kết quả khớp (tol={tol:.0e})        : {'PASS' if passed else 'FAIL'}")
+    
+    return {
+        "vif_scratch": vif_scratch,
+        "vif_sklearn": vif_sklearn,
+        "max_diff": max_diff,
+        "passed": passed
+    }

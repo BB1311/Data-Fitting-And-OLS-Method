@@ -17,9 +17,9 @@ import pytest
 
 from part1.ridge_lasso import (
     ridge_fit,
-    RidgeRegressor,
     lasso_fit,
-    LassoRegressor,
+    ridge_trace,
+    lasso_path,
     _soft_threshold,
     _lasso_coordinate_descent,
     verify_ridge_sklearn,
@@ -117,38 +117,24 @@ class TestRidgeCore:
         _assert_close(res["rss"], 0.0, tol=1e-5, msg="RSS tren du lieu hoan hao")
 
     def test_ridge_predict_consistent(self):
-        """y_hat tu fit() phai bang predict(X_train)."""
+        """y_hat tu ridge_fit() phai bang predict theo X_train."""
         X = np.random.randn(20, 2)
         y = np.random.randn(20)
-        model = RidgeRegressor(lam=1.0).fit(X, y)
-        _assert_close(model.fitted_values, model.predict(X),
-                      msg="fitted_values == predict(X_train)")
-
-    def test_ridge_predict_before_fit_raises(self):
-        """predict() truoc fit() phai raise RuntimeError."""
-        model = RidgeRegressor()
-        with pytest.raises(RuntimeError):
-            model.predict(np.array([[1.0, 2.0]]))
-
-    def test_ridge_fit_intercept_false(self):
-        """
-        fit_intercept=False: beta_hat phai co dung p phan tu (khong co intercept).
-        """
-        np.random.seed(3)
-        X = np.random.randn(20, 2)
-        y = np.random.randn(20)
-        model = RidgeRegressor(lam=1.0, fit_intercept=False).fit(X, y)
-        assert model.beta_hat.shape == (2,), (
-            f"FAIL: shape phai (2,), nhan duoc {model.beta_hat.shape}"
-        )
+        res = ridge_fit(X, y, lam=1.0)
+        # Tinh predict: X_design @ beta_hat
+        ones = np.ones((X.shape[0], 1))
+        X_design = np.hstack([ones, X])
+        y_pred = X_design @ res["beta_hat"]
+        _assert_close(res["y_hat"], y_pred,
+                      msg="y_hat == predict(X_train)")
 
     def test_ridge_residuals_property(self):
-        """residuals phai bang y - fitted_values."""
+        """residuals phai bang y - y_hat."""
         X = np.random.randn(15, 2)
         y = np.random.randn(15)
-        model = RidgeRegressor(lam=0.5).fit(X, y)
-        _assert_close(model.residuals, y - model.fitted_values,
-                      msg="residuals == y - fitted_values")
+        res = ridge_fit(X, y, lam=0.5)
+        _assert_close(res["residuals"], y - res["y_hat"],
+                      msg="residuals == y - y_hat")
 
 
 class TestRidgeTrace:
@@ -160,8 +146,7 @@ class TestRidgeTrace:
         y = np.random.randn(30)
         lambdas_test = np.logspace(-2, 2, 20)
 
-        lams, paths = RidgeRegressor.ridge_trace(X, y, lambdas=lambdas_test,
-                                                  show=False)
+        lams, paths = ridge_trace(X, y, lambdas=lambdas_test, show=False)
         assert lams.shape == (20,),    f"lambdas shape sai: {lams.shape}"
         assert paths.shape == (20, 4), f"coef_paths shape sai: {paths.shape}"  # 3 feat + intercept
 
@@ -175,7 +160,7 @@ class TestRidgeTrace:
         y = X @ np.array([2.0, -1.5, 3.0]) + np.random.randn(50)
         lambdas_test = np.logspace(-3, 4, 30)
 
-        _, paths = RidgeRegressor.ridge_trace(X, y, lambdas=lambdas_test, show=False)
+        _, paths = ridge_trace(X, y, lambdas=lambdas_test, show=False)
         norms = np.linalg.norm(paths[:, 1:], axis=1)  # bo intercept
         # ||beta|| khi lam nho phai > ||beta|| khi lam lon
         assert norms[0] > norms[-1], (
@@ -248,19 +233,17 @@ class TestLassoCore:
         )
 
     def test_lasso_predict_consistent(self):
-        """fitted_values phai bang predict(X_train)."""
+        """y_hat tu lasso_fit() phai bang predict theo X_train."""
         np.random.seed(23)
         X = np.random.randn(25, 3)
         y = np.random.randn(25)
-        model = LassoRegressor(lam=0.1).fit(X, y)
-        _assert_close(model.fitted_values, model.predict(X),
-                      msg="fitted_values == predict(X_train)")
-
-    def test_lasso_predict_before_fit_raises(self):
-        """predict() truoc fit() phai raise RuntimeError."""
-        model = LassoRegressor()
-        with pytest.raises(RuntimeError):
-            model.predict(np.array([[1.0, 2.0]]))
+        res = lasso_fit(X, y, lam=0.1)
+        # Tinh predict: X_design @ beta_hat
+        ones = np.ones((X.shape[0], 1))
+        X_design = np.hstack([ones, X])
+        y_pred = X_design @ res["beta_hat"]
+        _assert_close(res["y_hat"], y_pred,
+                      msg="y_hat == predict(X_train)")
 
     def test_lasso_n_nonzero_property(self):
         """n_nonzero phai dem dung so he so != 0 (khong tinh intercept)."""
@@ -270,25 +253,16 @@ class TestLassoCore:
         X  = np.column_stack([x1, x2])
         y  = 2.0 * x1 + np.random.randn(80) * 0.1
 
-        model = LassoRegressor(lam=0.5, max_iter=5000).fit(X, y)
-        assert model.n_nonzero <= 2, "n_nonzero sai"
-
-    def test_lasso_fit_intercept_false(self):
-        """fit_intercept=False: beta_hat phai co p phan tu."""
-        X = np.random.randn(20, 3)
-        y = np.random.randn(20)
-        model = LassoRegressor(lam=0.1, fit_intercept=False).fit(X, y)
-        assert model.beta_hat.shape == (3,), (
-            f"FAIL: shape phai (3,), nhan duoc {model.beta_hat.shape}"
-        )
+        res = lasso_fit(X, y, lam=0.5, max_iter=5000)
+        assert res["n_nonzero"] <= 2, "n_nonzero sai"
 
     def test_lasso_residuals_property(self):
-        """residuals phai bang y - fitted_values."""
+        """residuals phai bang y - y_hat."""
         X = np.random.randn(15, 2)
         y = np.random.randn(15)
-        model = LassoRegressor(lam=0.05).fit(X, y)
-        _assert_close(model.residuals, y - model.fitted_values,
-                      msg="residuals == y - fitted_values")
+        res = lasso_fit(X, y, lam=0.05)
+        _assert_close(res["residuals"], y - res["y_hat"],
+                      msg="residuals == y - y_hat")
         
     def test_lasso_convergence_with_tol_f(self):
         """Đảm bảo rằng khi dùng tol_f, số vòng lặp thực tế ít hơn max_iter rất lớn."""
@@ -315,7 +289,7 @@ class TestLassoPath:
         y = np.random.randn(30)
         lambdas_test = np.logspace(-4, 0, 15)
 
-        lams, paths = LassoRegressor.lasso_path(X, y, lambdas=lambdas_test, show=False)
+        lams, paths = lasso_path(X, y, lambdas=lambdas_test, show=False)
         assert lams.shape  == (15,),    f"lambdas shape sai: {lams.shape}"
         assert paths.shape == (15, 4),  f"coef_paths shape sai: {paths.shape}"
 
@@ -329,7 +303,7 @@ class TestLassoPath:
         y = X @ np.array([2.0, -1.5, 0.0, 3.0, 0.0]) + np.random.randn(80) * 0.5
 
         lambdas_test = np.logspace(-4, 0, 20)
-        _, paths = LassoRegressor.lasso_path(X, y, lambdas=lambdas_test, show=False)
+        _, paths = lasso_path(X, y, lambdas=lambdas_test, show=False)
 
         # So he so != 0 o lam nho nhat phai >= so he so != 0 o lam lon nhat
         n_nonzero_small_lam = np.sum(np.abs(paths[0,  1:]) > 1e-8)
@@ -446,8 +420,11 @@ class TestTheory:
         y_test  = X_test  @ beta + np.random.randn(n_test)
 
         # Ridge
-        ridge = RidgeRegressor(lam=5.0).fit(X_train, y_train)
-        rss_ridge = float(np.sum((y_test - ridge.predict(X_test)) ** 2))
+        res_ridge = ridge_fit(X_train, y_train, lam=5.0)
+        ones_test = np.ones((n_test, 1))
+        X_design_test = np.hstack([ones_test, X_test])
+        y_ridge_pred = X_design_test @ res_ridge["beta_hat"]
+        rss_ridge = float(np.sum((y_test - y_ridge_pred) ** 2))
 
         # OLS bang numpy lstsq (de tranh van de da cong tuyen trong du lieu cao chieu)
         ones    = np.ones((n_train, 1))
@@ -474,8 +451,8 @@ class TestTheory:
         X        = np.column_stack([x_signal, x_noise])
         y        = x_signal @ np.array([2.0, -3.0, 1.5]) + 0.2 * np.random.randn(n)
 
-        model = LassoRegressor(lam=0.3, max_iter=5000, tol=1e-8).fit(X, y)
-        beta  = model.beta_hat[1:]  # bo intercept
+        res = lasso_fit(X, y, lam=0.3, max_iter=5000, tol=1e-8)
+        beta  = res["beta_hat"][1:]  # bo intercept
 
         # 3 he so dau phai khac 0
         assert np.all(np.abs(beta[:3]) > 1e-4), (
@@ -556,10 +533,10 @@ class TestSklearnVerification:
         X = np.random.randn(80, 4)
         y = X @ np.array([1.0, -2.0, 0.5, 3.0]) + np.random.randn(80)
 
-        model_scratch = RidgeRegressor(lam=2.0).fit(X, y)
+        res_scratch = ridge_fit(X, y, lam=2.0)
         model_sk      = Ridge(alpha=2.0, fit_intercept=True).fit(X, y)
 
-        r2_scratch = 1.0 - np.sum((y - model_scratch.predict(X)) ** 2) / np.sum((y - y.mean()) ** 2)
+        r2_scratch = 1.0 - np.sum((y - res_scratch["y_hat"]) ** 2) / np.sum((y - y.mean()) ** 2)
         r2_sklearn = r2_score(y, model_sk.predict(X))
 
         _assert_close(r2_scratch, r2_sklearn, tol=1e-8, msg="R2 Ridge scratch vs sklearn")
