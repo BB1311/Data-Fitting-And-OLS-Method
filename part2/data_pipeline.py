@@ -37,7 +37,7 @@ Usage
     X_train_clean, y_train_clean = pipe.fit_transform(X_train, y_train)
     X_test_clean  = pipe.transform(X_test)
 
-    vif_df = run_vif_check(X_train_clean, threshold=10)
+    vif_df = run_vif_check(X_train_clean)
     X_train_no_mc, dropped = pipe.drop_high_vif(X_train_clean, threshold=10)
 """
 
@@ -45,7 +45,7 @@ Usage
 # ======================================================================
 # HÀM CẦU NỐI: VIF CHECK
 # ======================================================================
-def run_vif_check(X: pd.DataFrame, threshold: float = 10.0) -> pd.DataFrame:
+def run_vif_check(X: pd.DataFrame) -> pd.DataFrame:
     """
     Cầu nối: Chuyển DataFrame thành Numpy array để đưa vào hàm vif (Part 1), 
     sau đó trả về DataFrame chứa tên cột và điểm VIF tương ứng, sắp xếp giảm dần.
@@ -529,7 +529,7 @@ class DataPipeline:
         dropped = []
         for iteration in range(max_iter):
             # Gọi hàm cầu nối đã viết ở trên
-            vif_df = run_vif_check(X, threshold=threshold)
+            vif_df = run_vif_check(X)
             
             # Cột có VIF cao nhất đang nằm ở dòng đầu tiên
             worst = vif_df.iloc[0]
@@ -546,6 +546,48 @@ class DataPipeline:
             
         print(f"\n[VIF] Đã loại {len(dropped)} cột: {dropped}")
         return X, dropped
+
+    # ------------------------------------------------------------------
+    # PHẦN G: Inverse transform target (log-space --> giá gốc)
+    # ------------------------------------------------------------------
+    def inverse_transform_y(self, y_log: np.ndarray | pd.Series) -> np.ndarray:
+        """
+        Chuyển prediction từ log-space về không gian giá gốc (USD).
+
+        Dùng sau khi mô hình predict trên y đã log1p để tính
+        MAE/RMSE/R² có ý nghĩa thực tế với stakeholder.
+
+        Parameters
+        ----------
+        y_log : array-like
+            Giá trị dự đoán (hoặc y_test) đang ở log-scale
+            (kết quả của np.log1p áp dụng lên SalePrice gốc).
+
+        Returns
+        -------
+        y_original : np.ndarray
+            Giá trị đã được inverse (np.expm1), đơn vị USD.
+
+        Raises
+        ------
+        RuntimeError
+            Nếu pipeline chưa fit, hoặc log_target=False
+            (target không bị log → không cần inverse).
+
+        Examples
+        --------
+        y_pred_log  = model.predict(X_test_clean)          # log-scale
+        y_pred_usd  = pipe.inverse_transform_y(y_pred_log) # USD
+        y_test_usd  = pipe.inverse_transform_y(y_test)     # USD
+        metrics     = evaluate_model(y_test_usd, y_pred_usd, inverse_transform_y=False)
+        """
+        if not self._fitted:
+            raise RuntimeError("Pipeline chưa được fit. Gọi fit() hoặc fit_transform() trước.")
+        if not self.log_target:
+            raise RuntimeError(
+                "log_target=False — target không bị log1p nên không cần inverse_transform_y."
+            )
+        return np.expm1(np.asarray(y_log, dtype=float))
 
     # ------------------------------------------------------------------
     # Thông tin pipeline
