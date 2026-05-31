@@ -12,6 +12,7 @@ if parent_dir not in sys.path:
 
 from part1.ols_implementation import OLSRegressor, coef_inference, model_metrics
 from part1.ridge_lasso import ridge_fit, lasso_fit
+from part1.cross_validation import kfold_cv
 from part2.data_pipeline import run_vif_check
 
 
@@ -127,21 +128,6 @@ def _check_xy_shape(X, y):
 def _fit_ols(X, y):
     """Fit OLS tự cài đặt ở part 1 trên DataFrame đã chọn cột."""
     return OLSRegressor(fit_intercept=True).fit(X.to_numpy(), y)
-
-
-def _k_fold_indices(n, k):
-    """Tạo indices cho k-fold split."""
-    if k > n:
-        raise ValueError(f"Số fold (k={k}) không được lớn hơn số lượng mẫu (n={n}).")
-    indices = np.arange(n)
-    fold_sizes = np.full(k, n // k)
-    fold_sizes[:n % k] += 1
-    folds = []
-    current = 0
-    for size in fold_sizes:
-        folds.append(indices[current:current + size])
-        current += size
-    return folds
 
 
 def _safe_model_metrics(y, y_hat, p):
@@ -380,6 +366,9 @@ class OLSFeatureSelector:
         if self.selected_features_ is None:
             raise ValueError("Mô hình chưa được fit. Hãy gọi fit() trước.")
         X_df = _as_numeric_dataframe(X, feature_names)
+        missing = set(self.selected_features_) - set(X_df.columns)
+        if missing:
+            raise ValueError(f"Dữ liệu transform/predict thiếu các biến: {missing}")
         return X_df[self.selected_features_]
 
     def fit_transform(self, X, y, feature_names=None):
@@ -605,7 +594,7 @@ class RidgeCV:
     Attributes (sau khi fit)
     ----------
     best_lambda_    : float — λ tối ưu từ CV.
-    cv_results_     : list[dict] — {lam, mean_rmse, std_rmse} mỗi λ.
+    cv_results_     : list[dict] — {lam, cv_mse, cv_rmse, std_fold_mse, std_fold_rmse} mỗi λ.
     coef_           : np.ndarray — beta_hat cuối cùng (bao gồm intercept).
     feature_names_  : list[str]
     """
@@ -624,6 +613,7 @@ class RidgeCV:
     def fit(self, X, y, feature_names=None):
         """
         Chạy k-fold CV để tìm λ tốt nhất, rồi fit lại trên toàn bộ train.
+        Dùng lại hàm kfold_cv từ part1 — chọn λ theo CV(k).
         """
         X_df = _as_numeric_dataframe(X, feature_names)
         y_arr = _as_numeric_vector(y)
@@ -631,40 +621,29 @@ class RidgeCV:
 
         self.feature_names_ = X_df.columns.tolist()
         X_np = X_df.to_numpy()
-        n = X_np.shape[0]
 
-        # Shuffle trước khi chia fold
-        rng = np.random.RandomState(42)
-        perm = rng.permutation(n)
-        X_shuffled = X_np[perm]
-        y_shuffled = y_arr[perm]
-
-        folds = _k_fold_indices(n, self.k_folds)
-
-        # --- Cross-validation ---
+        # --- Cross-validation: gọi kfold_cv từ part1 cho mỗi λ ---
         cv_results = []
         for lam in self.lambdas:
-            fold_rmses = []
-            for i, val_idx in enumerate(folds):
-                train_idx = np.concatenate([folds[j] for j in range(self.k_folds) if j != i])
-                X_tr, y_tr = X_shuffled[train_idx], y_shuffled[train_idx]
-                X_val, y_val = X_shuffled[val_idx], y_shuffled[val_idx]
-
-                res = ridge_fit(X_tr, y_tr, lam=lam)
-                y_val_pred = np.hstack([np.ones((X_val.shape[0], 1)), X_val]) @ res["beta_hat"]
-                rmse_fold = float(np.sqrt(np.mean((y_val - y_val_pred) ** 2)))
-                fold_rmses.append(rmse_fold)
-
+            cv_res = kfold_cv(
+                X_np, y_arr,
+                k=self.k_folds,
+                model="ridge",
+                lam=lam,
+                random_state=42,
+            )
             cv_results.append({
                 "lam": lam,
-                "mean_rmse": float(np.mean(fold_rmses)),
-                "std_rmse": float(np.std(fold_rmses)),
+                "cv_mse": cv_res["cv_mse"],
+                "cv_rmse": cv_res["cv_rmse"],
+                "std_fold_mse": cv_res["std_fold_mse"],
+                "std_fold_rmse": cv_res["std_fold_rmse"],
             })
 
         self.cv_results_ = cv_results
 
-        # Chọn λ* có mean RMSE thấp nhất
-        best_idx = int(np.argmin([r["mean_rmse"] for r in cv_results]))
+        # Chọn λ* có CV MSE thấp nhất
+        best_idx = int(np.argmin([r["cv_mse"] for r in cv_results]))
         self.best_lambda_ = cv_results[best_idx]["lam"]
 
         # Fit lại trên toàn bộ train với λ*
@@ -703,7 +682,7 @@ class RidgeCV:
         print(f"Số λ đã quét: {len(self.lambdas)}")
         print(f"λ tối ưu: {self.best_lambda_:.6f}")
         best_cv = next(r for r in self.cv_results_ if r["lam"] == self.best_lambda_)
-        print(f"RMSE (CV): {best_cv['mean_rmse']:.6f} ± {best_cv['std_rmse']:.6f}")
+        print(f"CV MSE: {best_cv['cv_mse']:.6f} (RMSE: {best_cv['cv_rmse']:.6f})")
         print("-" * 30)
         print(f"Hệ số (beta_hat): {self.coef_.shape[0]} tham số (bao gồm intercept)")
 
@@ -732,7 +711,7 @@ class LassoCV:
     Attributes (sau khi fit)
     ----------
     best_lambda_    : float — λ tối ưu từ CV.
-    cv_results_     : list[dict] — {lam, mean_rmse, std_rmse} mỗi λ.
+    cv_results_     : list[dict] — {lam, cv_mse, cv_rmse, std_fold_mse, std_fold_rmse} mỗi λ.
     coef_           : np.ndarray — beta_hat cuối cùng (bao gồm intercept).
     n_nonzero_      : int — số hệ số ≠ 0 (không tính intercept).
     feature_names_  : list[str]
@@ -755,6 +734,7 @@ class LassoCV:
     def fit(self, X, y, feature_names=None):
         """
         Chạy k-fold CV để tìm λ tốt nhất, rồi fit lại trên toàn bộ train.
+        Dùng lại hàm kfold_cv từ part1 — chọn λ theo CV(k).
         """
         X_df = _as_numeric_dataframe(X, feature_names)
         y_arr = _as_numeric_vector(y)
@@ -762,40 +742,29 @@ class LassoCV:
 
         self.feature_names_ = X_df.columns.tolist()
         X_np = X_df.to_numpy()
-        n = X_np.shape[0]
 
-        # Shuffle trước khi chia fold
-        rng = np.random.RandomState(42)
-        perm = rng.permutation(n)
-        X_shuffled = X_np[perm]
-        y_shuffled = y_arr[perm]
-
-        folds = _k_fold_indices(n, self.k_folds)
-
-        # --- Cross-validation ---
+        # --- Cross-validation: gọi kfold_cv từ part1 cho mỗi λ ---
         cv_results = []
         for lam in self.lambdas:
-            fold_rmses = []
-            for i, val_idx in enumerate(folds):
-                train_idx = np.concatenate([folds[j] for j in range(self.k_folds) if j != i])
-                X_tr, y_tr = X_shuffled[train_idx], y_shuffled[train_idx]
-                X_val, y_val = X_shuffled[val_idx], y_shuffled[val_idx]
-
-                res = lasso_fit(X_tr, y_tr, lam=lam, max_iter=self.max_iter, tol=self.tol)
-                y_val_pred = np.hstack([np.ones((X_val.shape[0], 1)), X_val]) @ res["beta_hat"]
-                rmse_fold = float(np.sqrt(np.mean((y_val - y_val_pred) ** 2)))
-                fold_rmses.append(rmse_fold)
-
+            cv_res = kfold_cv(
+                X_np, y_arr,
+                k=self.k_folds,
+                model="lasso",
+                lam=lam,
+                random_state=42,
+            )
             cv_results.append({
                 "lam": lam,
-                "mean_rmse": float(np.mean(fold_rmses)),
-                "std_rmse": float(np.std(fold_rmses)),
+                "cv_mse": cv_res["cv_mse"],
+                "cv_rmse": cv_res["cv_rmse"],
+                "std_fold_mse": cv_res["std_fold_mse"],
+                "std_fold_rmse": cv_res["std_fold_rmse"],
             })
 
         self.cv_results_ = cv_results
 
-        # Chọn λ* có mean RMSE thấp nhất
-        best_idx = int(np.argmin([r["mean_rmse"] for r in cv_results]))
+        # Chọn λ* có CV MSE thấp nhất
+        best_idx = int(np.argmin([r["cv_mse"] for r in cv_results]))
         self.best_lambda_ = cv_results[best_idx]["lam"]
 
         # Fit lại trên toàn bộ train với λ*
@@ -814,6 +783,10 @@ class LassoCV:
         if not self._fitted:
             raise ValueError("Mô hình chưa được fit. Hãy gọi fit() trước.")
         X_df = _as_numeric_dataframe(X, feature_names)
+        missing = set(self.feature_names_) - set(X_df.columns)
+        if missing:
+            raise ValueError(f"Dữ liệu predict thiếu các biến: {missing}")
+        X_df = X_df[self.feature_names_]
         X_design = np.hstack([np.ones((X_df.shape[0], 1)), X_df.to_numpy()])
         return X_design @ self.coef_
 
@@ -834,7 +807,7 @@ class LassoCV:
         print(f"Số λ đã quét: {len(self.lambdas)}")
         print(f"λ tối ưu: {self.best_lambda_:.6f}")
         best_cv = next(r for r in self.cv_results_ if r["lam"] == self.best_lambda_)
-        print(f"RMSE (CV): {best_cv['mean_rmse']:.6f} ± {best_cv['std_rmse']:.6f}")
+        print(f"CV MSE: {best_cv['cv_mse']:.6f} (RMSE: {best_cv['cv_rmse']:.6f})")
         print(f"Số hệ số ≠ 0: {self.n_nonzero_}/{len(self.feature_names_)}")
         print("-" * 30)
         print(f"Hệ số (beta_hat): {self.coef_.shape[0]} tham số (bao gồm intercept)")
