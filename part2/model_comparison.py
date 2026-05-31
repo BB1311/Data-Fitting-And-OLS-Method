@@ -10,7 +10,7 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
-from part1.ols_implementation import OLSRegressor, coef_inference, model_metrics
+from part1.ols_implementation import OLSRegressor, coef_inference, model_metrics, compute_aic, compute_bic
 from part1.ridge_lasso import ridge_fit, lasso_fit
 from part1.cross_validation import kfold_cv
 from part2.data_pipeline import run_vif_check
@@ -150,12 +150,18 @@ def _safe_model_metrics(y, y_hat, p):
         df_resid = n - p - 1
         r2 = np.nan if tss == 0 else 1.0 - rss / tss
         r2_adj = np.nan if df_resid <= 0 or tss == 0 else 1.0 - (n - 1) / df_resid * (1.0 - r2)
+        # Gọi hàm tính AIC/BIC từ part1 cho fallback
+        aic = compute_aic(n, rss, p)
+        bic = compute_bic(n, rss, p)
+
         return {
             "rss": rss,
             "tss": tss,
             "ess": ess,
             "r2": r2,
             "r2_adj": r2_adj,
+            "aic": aic,
+            "bic": bic,
             "f_stat": np.inf if rss == 0 and df_model > 0 and df_resid > 0 else np.nan,
             "f_pvalue": 0.0 if rss == 0 and df_model > 0 and df_resid > 0 else np.nan,
             "n": n,
