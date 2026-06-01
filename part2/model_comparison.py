@@ -893,6 +893,10 @@ class PolynomialFeatureGenerator:
 
         if self.verbose and self.new_col_names_:
             print(f"  [Polynomial] {len(self.poly_cols_)} cột gốc → {len(self.new_col_names_)} features mới (degree={self.degree})")
+        
+        if self.verbose and len(self.new_col_names_) > 100:
+            print(f"  [WARNING]: Tạo {len(self.new_col_names_)} đặc trưng mới, có thể gây overfitting!")
+        
         return self
 
     def transform(self, X):
@@ -1016,6 +1020,10 @@ class InteractionFeatureGenerator:
 
         if self.verbose and self.new_col_names_:
             print(f"  [Interaction] {len(self.interact_cols_)} cột gốc → {len(self.new_col_names_)} features mới (degree={self.degree})")
+
+        if self.verbose and len(self.new_col_names_) > 100:
+            print(f"  [WARNING]: Tạo {len(self.new_col_names_)} đặc trưng mới, có thể gây overfitting!")
+            
         return self
 
     def transform(self, X):
