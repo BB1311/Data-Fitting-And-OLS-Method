@@ -921,7 +921,7 @@ class PolynomialFeatureGenerator:
                     new_cols[f"{col}^{d}"] = X_df[col] ** d
 
         new_df = pd.DataFrame(new_cols, index=X_df.index)
-        new_df = new_df.reindex(columns=self.new_col_names_, fill_value=0)
+        new_df = new_df[self.new_col_names_] 
         
         return pd.concat([X_df, new_df], axis=1)
 
@@ -1051,7 +1051,7 @@ class InteractionFeatureGenerator:
                     new_cols[col_name] = X_df[list(cols)].prod(axis=1)
 
         new_df = pd.DataFrame(new_cols, index=X_df.index)
-        new_df = new_df.reindex(columns=self.new_col_names_, fill_value=0)
+        new_df = new_df[self.new_col_names_] 
         
         return pd.concat([X_df, new_df], axis=1)
 
