@@ -3,7 +3,7 @@ import sys
 
 import numpy as np
 import pandas as pd
-
+from itertools import combinations
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -201,6 +201,129 @@ def ols_coefficient_table(X, y, feature_names=None):
             "ci_upper": inference["ci_upper"],
         }
     )
+
+
+# ======================================================================
+# HELPER: POLYNOMIAL / INTERACTION FEATURES
+# ======================================================================
+
+def _get_poly_cols(X: pd.DataFrame, top_k: int | None = 15) -> list:
+    """
+    Chọn danh sách cột số để sinh polynomial/interaction features.
+    Tự động loại cột nhị phân (dummy 0/1).
+    Chọn top_k cột có phương sai cao nhất nếu top_k không phải None.
+
+    Parameters
+    ----------
+    X     : pd.DataFrame đã qua DataPipeline (toàn số).
+    top_k : int | None — giới hạn số cột tham gia để tránh bùng nổ chiều.
+
+    Returns
+    -------
+    list[str] — tên các cột được chọn.
+    """
+    num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+    # Loại cột nhị phân (dummy one-hot chỉ có 0/1)
+    num_cols = [c for c in num_cols if X[c].nunique() > 2]
+
+    if top_k is not None and len(num_cols) > top_k:
+        variances = X[num_cols].var()
+        num_cols  = variances.nlargest(top_k).index.tolist()
+
+    return num_cols
+
+
+def add_polynomial_features(
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    degree: int = 2,
+    interaction_only: bool = False,
+    top_k: int | None = 15,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Sinh đặc trưng Polynomial / Interaction từ các cột số, trả về
+    (X_train_mở_rộng, X_test_mở_rộng).
+
+    Luôn học danh sách cột trên X_train rồi apply lên X_test
+    để tránh data leakage.
+
+    Parameters
+    ----------
+    X_train : pd.DataFrame — tập train đã qua DataPipeline.
+    X_test  : pd.DataFrame — tập test đã qua DataPipeline.
+    degree  : int (default 2)
+        1 → không thêm gì (pass-through).
+        2 → thêm x² và x_i*x_j.
+        3 → thêm thêm x³ (interaction vẫn chỉ bậc 2).
+    interaction_only : bool (default False)
+        True  → chỉ sinh x_i*x_j, KHÔNG sinh x².
+        False → sinh cả x² lẫn x_i*x_j.
+    top_k : int | None (default 15)
+        Chỉ lấy top_k cột phương sai cao nhất để sinh features.
+        None → dùng tất cả cột số liên tục.
+
+    Returns
+    -------
+    X_train_poly, X_test_poly : tuple[pd.DataFrame, pd.DataFrame]
+        X gốc được concat thêm các cột polynomial/interaction mới.
+
+    Examples
+    --------
+    >>> X_train_poly, X_test_poly = add_polynomial_features(
+    ...     X_train, X_test, degree=2, interaction_only=False, top_k=10
+    ... )
+    >>> model = RidgeCV()
+    >>> model.fit(X_train_poly, y_train)
+    """
+    if degree < 1:
+        raise ValueError("degree phải >= 1.")
+    if degree == 1:
+        return X_train.copy(), X_test.copy()
+
+    from itertools import combinations
+
+    # 1. Học danh sách cột trên TRAIN (tránh leakage)
+    poly_cols = _get_poly_cols(X_train, top_k=top_k)
+
+    if not poly_cols:
+        print("  [Poly] Không tìm được cột số phù hợp — trả về X gốc.")
+        return X_train.copy(), X_test.copy()
+
+    # 2. Tính trước tên cột mới (để reindex test set cho khớp)
+    new_col_names = []
+    if not interaction_only:
+        for col in poly_cols:
+            new_col_names.append(f"{col}^2")
+    if not interaction_only and degree >= 3:
+        for col in poly_cols:
+            new_col_names.append(f"{col}^3")
+    for col_i, col_j in combinations(poly_cols, 2):
+        new_col_names.append(f"{col_i}_x_{col_j}")
+
+    print(f"  [Poly] {len(poly_cols)} cột gốc → {len(new_col_names)} features mới "
+          f"(degree={degree}, interaction_only={interaction_only})")
+
+    # 3. Hàm sinh cột mới cho 1 DataFrame
+    def _build(X: pd.DataFrame) -> pd.DataFrame:
+        new_cols = {}
+        if not interaction_only:
+            for col in poly_cols:
+                if col in X.columns:
+                    new_cols[f"{col}^2"] = X[col] ** 2
+        if not interaction_only and degree >= 3:
+            for col in poly_cols:
+                if col in X.columns:
+                    new_cols[f"{col}^3"] = X[col] ** 3
+        for col_i, col_j in combinations(poly_cols, 2):
+            if col_i in X.columns and col_j in X.columns:
+                new_cols[f"{col_i}_x_{col_j}"] = X[col_i] * X[col_j]
+
+        new_df = pd.DataFrame(new_cols, index=X.index)
+        # Đảm bảo test set có đúng cột như train (fill 0 nếu thiếu)
+        new_df = new_df.reindex(columns=new_col_names, fill_value=0)
+        return pd.concat([X, new_df], axis=1)
+
+    return _build(X_train), _build(X_test)
 
 
 # ======================================================================
@@ -822,3 +945,207 @@ class LassoCV:
         print(f"Số hệ số ≠ 0: {self.n_nonzero_}/{len(self.feature_names_)}")
         print("-" * 30)
         print(f"Hệ số (beta_hat): {self.coef_.shape[0]} tham số (bao gồm intercept)")
+
+# ======================================================================
+# MÔ HÌNH 5: POLYNOMIAL FEATURES 
+# ======================================================================
+class PolynomialFeatureGenerator:
+    """
+    Polynomial Features — Chỉ sinh đặc trưng đa thức (lũy thừa) từ các cột số.
+    """
+
+    def __init__(self, degree=2, top_k=15, verbose=True):
+        self.degree = degree
+        self.top_k = top_k
+        self.verbose = verbose
+
+        self.poly_cols_ = None
+        self.new_col_names_ = None
+        self.feature_names_ = None
+
+    def fit(self, X, y=None):
+        if self.degree < 1:
+            raise ValueError("degree phải >= 1.")
+
+        if self.degree == 1:
+            self.poly_cols_ = []
+            self.new_col_names_ = []
+            self.feature_names_ = X.columns.tolist()
+            return self
+
+        # Lọc cột số liên tục
+        num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+        num_cols = [c for c in num_cols if X[c].nunique() > 2]
+
+        # Lọc top_k theo Hệ số biến thiên (CV)
+        if self.top_k is not None and len(num_cols) > self.top_k:
+            means = X[num_cols].mean().replace(0, 1) 
+            cv = X[num_cols].std() / means.abs()
+            num_cols = cv.nlargest(self.top_k).index.tolist()
+
+        self.poly_cols_ = num_cols
+        self.new_col_names_ = []
+
+        if self.poly_cols_:
+            # Duyệt từ bậc 2 đến degree để sinh tên biến lũy thừa
+            for d in range(2, self.degree + 1):
+                for col in self.poly_cols_:
+                    self.new_col_names_.append(f"{col}^{d}")
+
+        self.feature_names_ = X.columns.tolist() + self.new_col_names_
+
+        if self.verbose and self.new_col_names_:
+            print(f"  [Polynomial] {len(self.poly_cols_)} cột gốc → {len(self.new_col_names_)} features mới (degree={self.degree})")
+        return self
+
+    def transform(self, X):
+        if self.poly_cols_ is None:
+            raise ValueError("Mô hình chưa được fit.")
+        if self.degree == 1 or not self.poly_cols_:
+            return X.copy()
+
+        new_cols = {}
+        for d in range(2, self.degree + 1):
+            for col in self.poly_cols_:
+                if col in X.columns:
+                    new_cols[f"{col}^{d}"] = X[col] ** d
+
+        new_df = pd.DataFrame(new_cols, index=X.index)
+        new_df = new_df.reindex(columns=self.new_col_names_, fill_value=0)
+        return pd.concat([X, new_df], axis=1)
+
+    def fit_transform(self, X, y=None):
+        return self.fit(X, y).transform(X)
+
+    def summary(self):
+        if self.poly_cols_ is None:
+            print("Mô hình chưa được fit.")
+            return
+
+        width = 55
+        print("=" * width)
+        print("   POLYNOMIAL FEATURES (ĐA THỨC)".center(width))
+        print("=" * width)
+        print(f"  {'Bậc đa thức (degree)':<35} {self.degree}")
+        print(f"  {'Số cột gốc tham gia':<35} {len(self.poly_cols_)}")
+        print(f"  {'Số đặc trưng mới sinh ra':<35} {len(self.new_col_names_)}")
+        print(f"  {'Tổng biến sau mở rộng':<35} {len(self.feature_names_)}")
+        print("-" * width)
+
+        print("  Cột gốc được chọn:")
+        for i, col in enumerate(self.poly_cols_, 1):
+            print(f"    {i:>2}. {col}")
+        print("-" * width)
+
+        print("  Đặc trưng mới (Top 10):")
+        for i, col in enumerate(self.new_col_names_[:10], 1):
+            print(f"    {i:>2}. {col}")
+        if len(self.new_col_names_) > 10:
+            print(f"       ... và {len(self.new_col_names_) - 10} đặc trưng khác.")
+        print("=" * width)
+
+# ======================================================================
+# MÔ HÌNH 6: INTERACTION FEATURES
+# ======================================================================
+
+class InteractionFeatureGenerator:
+    """
+    Interaction Features — Chỉ sinh đặc trưng tương tác (nhân chéo) giữa các cột số khác nhau.
+    """
+
+    def __init__(self, degree=2, top_k=15, verbose=True):
+        self.degree = degree
+        self.top_k = top_k
+        self.verbose = verbose
+
+        self.interact_cols_ = None
+        self.new_col_names_ = None
+        self.feature_names_ = None
+
+    def fit(self, X, y=None):
+        if self.degree < 2:
+            raise ValueError("degree cho Interaction phải >= 2.")
+
+        # Lọc cột số liên tục
+        num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+        num_cols = [c for c in num_cols if X[c].nunique() > 2]
+
+        # Lọc top_k theo Hệ số biến thiên (CV)
+        if self.top_k is not None and len(num_cols) > self.top_k:
+            means = X[num_cols].mean().replace(0, 1)
+            cv = X[num_cols].std() / means.abs()
+            num_cols = cv.nlargest(self.top_k).index.tolist()
+
+        self.interact_cols_ = num_cols
+        self.new_col_names_ = []
+
+        if self.interact_cols_:
+            # Tương tác bậc 2 (vd: x1 * x2)
+            if self.degree >= 2:
+                for col_i, col_j in combinations(self.interact_cols_, 2):
+                    self.new_col_names_.append(f"{col_i}_x_{col_j}")
+
+            # Tương tác bậc 3 (vd: x1 * x2 * x3)
+            if self.degree >= 3:
+                for col_i, col_j, col_k in combinations(self.interact_cols_, 3):
+                    self.new_col_names_.append(f"{col_i}_x_{col_j}_x_{col_k}")
+
+        self.feature_names_ = X.columns.tolist() + self.new_col_names_
+
+        if self.verbose and self.new_col_names_:
+            print(f"  [Interaction] {len(self.interact_cols_)} cột gốc → {len(self.new_col_names_)} features mới (degree={self.degree})")
+        return self
+
+    def transform(self, X):
+        if self.interact_cols_ is None:
+            raise ValueError("Mô hình chưa được fit.")
+        if not self.interact_cols_:
+            return X.copy()
+
+        new_cols = {}
+        
+        # Tương tác bậc 2
+        if self.degree >= 2:
+            for col_i, col_j in combinations(self.interact_cols_, 2):
+                if col_i in X.columns and col_j in X.columns:
+                    new_cols[f"{col_i}_x_{col_j}"] = X[col_i] * X[col_j]
+
+        # Tương tác bậc 3
+        if self.degree >= 3:
+            for col_i, col_j, col_k in combinations(self.interact_cols_, 3):
+                if col_i in X.columns and col_j in X.columns and col_k in X.columns:
+                    new_cols[f"{col_i}_x_{col_j}_x_{col_k}"] = X[col_i] * X[col_j] * X[col_k]
+
+        new_df = pd.DataFrame(new_cols, index=X.index)
+        new_df = new_df.reindex(columns=self.new_col_names_, fill_value=0)
+        return pd.concat([X, new_df], axis=1)
+
+    def fit_transform(self, X, y=None):
+        return self.fit(X, y).transform(X)
+
+    def summary(self):
+        if self.interact_cols_ is None:
+            print("Mô hình chưa được fit.")
+            return
+
+        width = 55
+        print("=" * width)
+        print("   INTERACTION FEATURES (TƯƠNG TÁC)".center(width))
+        print("=" * width)
+        print(f"  {'Bậc tương tác lớn nhất':<35} {self.degree}")
+        print(f"  {'Số cột gốc tham gia':<35} {len(self.interact_cols_)}")
+        print(f"  {'Số đặc trưng mới sinh ra':<35} {len(self.new_col_names_)}")
+        print(f"  {'Tổng biến sau mở rộng':<35} {len(self.feature_names_)}")
+        print("-" * width)
+
+        print("  Cột gốc được chọn:")
+        for i, col in enumerate(self.interact_cols_, 1):
+            print(f"    {i:>2}. {col}")
+        print("-" * width)
+
+        print("  Đặc trưng mới (Top 10):")
+        for i, col in enumerate(self.new_col_names_[:10], 1):
+            print(f"    {i:>2}. {col}")
+        if len(self.new_col_names_) > 10:
+            print(f"       ... và {len(self.new_col_names_) - 10} đặc trưng khác.")
+        print("=" * width)
