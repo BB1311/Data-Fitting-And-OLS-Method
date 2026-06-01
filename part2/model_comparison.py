@@ -831,6 +831,11 @@ class PolynomialFeatureGenerator:
     """
 
     def __init__(self, degree=2, top_k=15, verbose=True):
+        if not isinstance(degree, int) or degree < 1:
+            raise ValueError("degree phải là số nguyên >= 1.")
+        if top_k is not None and (not isinstance(top_k, int) or top_k < 1):
+            raise ValueError("top_k phải là số nguyên dương hoặc None.")
+            
         self.degree = degree
         self.top_k = top_k
         self.verbose = verbose
@@ -840,23 +845,23 @@ class PolynomialFeatureGenerator:
         self.feature_names_ = None
 
     def fit(self, X, y=None):
-        if self.degree < 1:
-            raise ValueError("degree phải >= 1.")
+        # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa X thành DataFrame số
+        X_df = _as_numeric_dataframe(X)
 
         if self.degree == 1:
             self.poly_cols_ = []
             self.new_col_names_ = []
-            self.feature_names_ = X.columns.tolist()
+            self.feature_names_ = X_df.columns.tolist() 
             return self
 
-        # Lọc cột số liên tục
-        num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-        num_cols = [c for c in num_cols if X[c].nunique() > 2]
+        # Lọc cột số liên tục (Lúc này X_df đã đảm bảo là số)
+        num_cols = X_df.columns.tolist()
+        num_cols = [c for c in num_cols if X_df[c].nunique() > 2]
 
         # Lọc top_k theo Hệ số biến thiên (CV)
         if self.top_k is not None and len(num_cols) > self.top_k:
-            means = X[num_cols].mean().abs() + 1e-8
-            cv = X[num_cols].std() / means
+            means = X_df[num_cols].mean().abs() + 1e-8
+            cv = X_df[num_cols].std() / means
             num_cols = cv.nlargest(self.top_k).index.tolist()
 
         self.poly_cols_ = num_cols
@@ -868,7 +873,7 @@ class PolynomialFeatureGenerator:
                 for col in self.poly_cols_:
                     self.new_col_names_.append(f"{col}^{d}")
 
-        self.feature_names_ = X.columns.tolist() + self.new_col_names_
+        self.feature_names_ = X_df.columns.tolist() + self.new_col_names_
 
         if self.verbose and self.new_col_names_:
             print(f"  [Polynomial] {len(self.poly_cols_)} cột gốc → {len(self.new_col_names_)} features mới (degree={self.degree})")
@@ -877,18 +882,23 @@ class PolynomialFeatureGenerator:
     def transform(self, X):
         if self.poly_cols_ is None:
             raise ValueError("Mô hình chưa được fit.")
+            
+        # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa dữ liệu mới truyền vào
+        X_df = _as_numeric_dataframe(X)
+        
         if self.degree == 1 or not self.poly_cols_:
-            return X.copy()
+            return X_df.copy()
 
         new_cols = {}
         for d in range(2, self.degree + 1):
             for col in self.poly_cols_:
-                if col in X.columns:
-                    new_cols[f"{col}^{d}"] = X[col] ** d
+                if col in X_df.columns:
+                    new_cols[f"{col}^{d}"] = X_df[col] ** d
 
-        new_df = pd.DataFrame(new_cols, index=X.index)
+        new_df = pd.DataFrame(new_cols, index=X_df.index)
         new_df = new_df.reindex(columns=self.new_col_names_, fill_value=0)
-        return pd.concat([X, new_df], axis=1)
+        
+        return pd.concat([X_df, new_df], axis=1)
 
     def fit_transform(self, X, y=None):
         return self.fit(X, y).transform(X)
@@ -930,6 +940,11 @@ class InteractionFeatureGenerator:
     """
 
     def __init__(self, degree=2, top_k=15, verbose=True):
+        if not isinstance(degree, int) or degree < 2:
+            raise ValueError("degree cho Interaction phải là số nguyên >= 2.")
+        if top_k is not None and (not isinstance(top_k, int) or top_k < 1):
+            raise ValueError("top_k phải là số nguyên dương hoặc None.")
+            
         self.degree = degree
         self.top_k = top_k
         self.verbose = verbose
@@ -939,17 +954,17 @@ class InteractionFeatureGenerator:
         self.feature_names_ = None
 
     def fit(self, X, y=None):
-        if self.degree < 2:
-            raise ValueError("degree cho Interaction phải >= 2.")
+        # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa X thành DataFrame số
+        X_df = _as_numeric_dataframe(X)
 
-        # Lọc cột số liên tục
-        num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-        num_cols = [c for c in num_cols if X[c].nunique() > 2]
+        # Lọc cột số liên tục (Lúc này X_df đã đảm bảo là số)
+        num_cols = X_df.columns.tolist()
+        num_cols = [c for c in num_cols if X_df[c].nunique() > 2]
 
         # Lọc top_k theo Hệ số biến thiên (CV)
         if self.top_k is not None and len(num_cols) > self.top_k:
-            means = X[num_cols].mean().abs() + 1e-8
-            cv = X[num_cols].std() / means
+            means = X_df[num_cols].mean().abs() + 1e-8
+            cv = X_df[num_cols].std() / means
             num_cols = cv.nlargest(self.top_k).index.tolist()
 
         self.interact_cols_ = num_cols
@@ -961,7 +976,7 @@ class InteractionFeatureGenerator:
                     col_name = "_x_".join(cols)
                     self.new_col_names_.append(col_name)
 
-        self.feature_names_ = X.columns.tolist() + self.new_col_names_
+        self.feature_names_ = X_df.columns.tolist() + self.new_col_names_
 
         if self.verbose and self.new_col_names_:
             print(f"  [Interaction] {len(self.interact_cols_)} cột gốc → {len(self.new_col_names_)} features mới (degree={self.degree})")
@@ -970,20 +985,26 @@ class InteractionFeatureGenerator:
     def transform(self, X):
         if self.interact_cols_ is None:
             raise ValueError("Mô hình chưa được fit.")
+            
+        # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa dữ liệu mới truyền vào
+        X_df = _as_numeric_dataframe(X)
+        
         if not self.interact_cols_:
-            return X.copy()
+            return X_df.copy()
 
         new_cols = {}
 
         for d in range(2, self.degree + 1):
             for cols in combinations(self.interact_cols_, d):
-                if all(c in X.columns for c in cols):
-                    col_name = "_x_".join(cols)
-                    new_cols[col_name] = X[list(cols)].prod(axis=1)
+                # FIX BUGS: Đã định nghĩa lại col_name trong scope này
+                col_name = "_x_".join(cols)
+                if all(c in X_df.columns for c in cols):
+                    new_cols[col_name] = X_df[list(cols)].prod(axis=1)
 
-        new_df = pd.DataFrame(new_cols, index=X.index)
+        new_df = pd.DataFrame(new_cols, index=X_df.index)
         new_df = new_df.reindex(columns=self.new_col_names_, fill_value=0)
-        return pd.concat([X, new_df], axis=1)
+        
+        return pd.concat([X_df, new_df], axis=1)
 
     def fit_transform(self, X, y=None):
         return self.fit(X, y).transform(X)
