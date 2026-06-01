@@ -10,9 +10,9 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
-from part1.ols_implementation import OLSRegressor, coef_inference, model_metrics, compute_aic, compute_bic
+from part1.ols_implementation import OLSRegressor, coef_inference, model_metrics, compute_aic, compute_bic, compute_r2
 from part1.ridge_lasso import ridge_fit, lasso_fit
-from part1.cross_validation import kfold_cv
+from part1.cross_validation import kfold_cv, _mae, _rmse
 from part2.data_pipeline import run_vif_check
 
 
@@ -36,11 +36,9 @@ def evaluate_model(y_true, y_pred, inverse_transform=False):
         y_true = np.expm1(y_true)
         y_pred = np.expm1(y_pred)
 
-    mae = float(np.mean(np.abs(y_true - y_pred)))
-    rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-    ss_res = float(np.sum((y_true - y_pred) ** 2))
-    ss_tot = float(np.sum((y_true - y_true.mean()) ** 2))
-    r2 = 1.0 - ss_res / ss_tot if ss_tot != 0 else float('nan')
+    mae = _mae(y_true, y_pred)
+    rmse = _rmse(y_true, y_pred)
+    r2 = compute_r2(y_true, y_pred)
     return {"mae": mae, "rmse": rmse, "r2": r2}
 
 
