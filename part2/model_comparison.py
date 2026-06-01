@@ -830,7 +830,7 @@ class PolynomialFeatureGenerator:
     Polynomial Features — Chỉ sinh đặc trưng đa thức (lũy thừa) từ các cột số.
     """
 
-    def __init__(self, degree=2, top_k=15, verbose=True):
+    def __init__(self, degree=2, top_k=15, use_correlation=True, verbose=True):
         if not isinstance(degree, int) or degree < 1:
             raise ValueError("degree phải là số nguyên >= 1.")
         if top_k is not None and (not isinstance(top_k, int) or top_k < 1):
@@ -838,6 +838,8 @@ class PolynomialFeatureGenerator:
             
         self.degree = degree
         self.top_k = top_k
+        self.use_correlation = use_correlation
+
         self.verbose = verbose
 
         self.poly_cols_ = None
@@ -860,9 +862,23 @@ class PolynomialFeatureGenerator:
 
         # Lọc top_k theo Hệ số biến thiên (CV)
         if self.top_k is not None and len(num_cols) > self.top_k:
-            means = X_df[num_cols].mean().abs() + 1e-8
-            cv = X_df[num_cols].std() / means
-            num_cols = cv.nlargest(self.top_k).index.tolist()
+            if self.use_correlation and y is not None:
+                # Cách 1: Dùng hệ số tương quan với y (Ưu tiên)
+                y_series = pd.Series(np.asarray(y).ravel())
+                correlations = X_df[num_cols].apply(lambda col: col.corr(y_series))
+                num_cols = correlations.abs().nlargest(self.top_k).index.tolist()
+                
+                if self.verbose:
+                    print(f"  [Lọc biến] Đã giữ lại top {self.top_k} biến dựa trên Correlation với y.")
+            else:
+                # Cách 2: Dùng hệ số biến thiên CV (Fallback)
+                means = X_df[num_cols].mean().abs() + 1e-8
+                cv = X_df[num_cols].std() / means
+                num_cols = cv.nlargest(self.top_k).index.tolist()
+                
+                if self.verbose:
+                    reason = "không truyền y" if self.use_correlation else "use_correlation=False"
+                    print(f"  [Lọc biến] Do {reason}, đã giữ lại top {self.top_k} biến dựa trên CV.")
 
         self.poly_cols_ = num_cols
         self.new_col_names_ = []
@@ -944,14 +960,15 @@ class InteractionFeatureGenerator:
     Interaction Features — Chỉ sinh đặc trưng tương tác (nhân chéo) giữa các cột số khác nhau.
     """
 
-    def __init__(self, degree=2, top_k=15, verbose=True):
-        if not isinstance(degree, int) or degree < 2:
-            raise ValueError("degree cho Interaction phải là số nguyên >= 2.")
+    def __init__(self, degree=2, top_k=15, use_correlation=True, verbose=True):
+        if not isinstance(degree, int) or degree < 1:
+            raise ValueError("degree phải là số nguyên >= 1.")
         if top_k is not None and (not isinstance(top_k, int) or top_k < 1):
             raise ValueError("top_k phải là số nguyên dương hoặc None.")
             
         self.degree = degree
         self.top_k = top_k
+        self.use_correlation = use_correlation 
         self.verbose = verbose
 
         self.interact_cols_ = None
@@ -968,9 +985,23 @@ class InteractionFeatureGenerator:
 
         # Lọc top_k theo Hệ số biến thiên (CV)
         if self.top_k is not None and len(num_cols) > self.top_k:
-            means = X_df[num_cols].mean().abs() + 1e-8
-            cv = X_df[num_cols].std() / means
-            num_cols = cv.nlargest(self.top_k).index.tolist()
+            if self.use_correlation and y is not None:
+                # Cách 1: Dùng hệ số tương quan với y (Ưu tiên)
+                y_series = pd.Series(np.asarray(y).ravel())
+                correlations = X_df[num_cols].apply(lambda col: col.corr(y_series))
+                num_cols = correlations.abs().nlargest(self.top_k).index.tolist()
+                
+                if self.verbose:
+                    print(f"  [Lọc biến] Đã giữ lại top {self.top_k} biến dựa trên Correlation với y.")
+            else:
+                # Cách 2: Dùng hệ số biến thiên CV (Fallback)
+                means = X_df[num_cols].mean().abs() + 1e-8
+                cv = X_df[num_cols].std() / means
+                num_cols = cv.nlargest(self.top_k).index.tolist()
+                
+                if self.verbose:
+                    reason = "không truyền y" if self.use_correlation else "use_correlation=False"
+                    print(f"  [Lọc biến] Do {reason}, đã giữ lại top {self.top_k} biến dựa trên CV.")
 
         self.interact_cols_ = num_cols
         self.new_col_names_ = []
