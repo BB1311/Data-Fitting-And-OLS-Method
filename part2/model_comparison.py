@@ -83,7 +83,7 @@ def train_test_split_df(X, y, test_size=0.2, random_state=42):
     return X_train, X_test, y_train, y_test
 
 
-def _as_numeric_dataframe(X, feature_names=None):
+def as_numeric_dataframe(X, feature_names=None):
     """
     Chuẩn hóa X về DataFrame số để các hàm OLS/VIF dùng chung một kiểu dữ liệu.
     """
@@ -115,7 +115,7 @@ def _as_numeric_dataframe(X, feature_names=None):
     return X_df
 
 
-def _as_numeric_vector(y):
+def as_numeric_vector(y):
     """Chuẩn hóa y về vector 1 chiều dạng float."""
     y_arr = np.asarray(y, dtype=float).ravel()
     if not np.isfinite(y_arr).all():
@@ -123,7 +123,7 @@ def _as_numeric_vector(y):
     return y_arr
 
 
-def _check_xy_shape(X, y):
+def check_xy_shape(X, y):
     """Kiểm tra số dòng của X và y có khớp nhau không."""
     if X.shape[0] != y.shape[0]:
         raise ValueError(f"X và y không cùng số dòng: X={X.shape[0]}, y={y.shape[0]}")
@@ -172,9 +172,9 @@ def ols_coefficient_table(X, y, feature_names=None):
 
     Bảng này dùng trực tiếp để quyết định biến nào có p-value lớn nhất.
     """
-    X_df = _as_numeric_dataframe(X, feature_names)
-    y_arr = _as_numeric_vector(y)
-    _check_xy_shape(X_df, y_arr)
+    X_df = as_numeric_dataframe(X, feature_names)
+    y_arr = as_numeric_vector(y)
+    check_xy_shape(X_df, y_arr)
 
     model = _fit_ols(X_df, y_arr)
     # Tắt warning chia 0 khi sigma2 = 0 (fit hoàn hảo)
@@ -232,9 +232,9 @@ class OLSBasic:
 
     def fit(self, X, y, feature_names=None):
         """Fit OLS trên tất cả biến."""
-        X_df = _as_numeric_dataframe(X, feature_names)
-        y_arr = _as_numeric_vector(y)
-        _check_xy_shape(X_df, y_arr)
+        X_df = as_numeric_dataframe(X, feature_names)
+        y_arr = as_numeric_vector(y)
+        check_xy_shape(X_df, y_arr)
 
         self.feature_names_ = X_df.columns.tolist()
         self.model_ = _fit_ols(X_df, y_arr)
@@ -248,7 +248,7 @@ class OLSBasic:
         """Dự đoán y_hat trên dữ liệu mới."""
         if self.model_ is None:
             raise ValueError("Mô hình chưa được fit. Hãy gọi fit() trước.")
-        X_df = _as_numeric_dataframe(X, feature_names)
+        X_df = as_numeric_dataframe(X, feature_names)
         missing = set(self.feature_names_) - set(X_df.columns)
         if missing:
             raise ValueError(f"Dữ liệu predict thiếu các biến: {missing}")
@@ -330,9 +330,9 @@ class OLSFeatureSelector:
 
     def fit(self, X, y, feature_names=None):
         """Chạy backward elimination để chọn biến, lưu kết quả vào attributes."""
-        X_df = _as_numeric_dataframe(X, feature_names)
-        y_arr = _as_numeric_vector(y)
-        _check_xy_shape(X_df, y_arr)
+        X_df = as_numeric_dataframe(X, feature_names)
+        y_arr = as_numeric_vector(y)
+        check_xy_shape(X_df, y_arr)
 
         if self.method == "pvalue":
             result = self._backward_elimination_pvalue(X_df, y_arr)
@@ -374,7 +374,7 @@ class OLSFeatureSelector:
         """Trả về DataFrame chỉ chứa các cột đã được chọn sau fit."""
         if self.selected_features_ is None:
             raise ValueError("Mô hình chưa được fit. Hãy gọi fit() trước.")
-        X_df = _as_numeric_dataframe(X, feature_names)
+        X_df = as_numeric_dataframe(X, feature_names)
         missing = set(self.selected_features_) - set(X_df.columns)
         if missing:
             raise ValueError(f"Dữ liệu transform/predict thiếu các biến: {missing}")
@@ -624,9 +624,9 @@ class RidgeCV:
         Chạy k-fold CV để tìm λ tốt nhất, rồi fit lại trên toàn bộ train.
         Dùng lại hàm kfold_cv từ part1 — chọn λ theo CV(k).
         """
-        X_df = _as_numeric_dataframe(X, feature_names)
-        y_arr = _as_numeric_vector(y)
-        _check_xy_shape(X_df, y_arr)
+        X_df = as_numeric_dataframe(X, feature_names)
+        y_arr = as_numeric_vector(y)
+        check_xy_shape(X_df, y_arr)
 
         self.feature_names_ = X_df.columns.tolist()
         X_np = X_df.to_numpy()
@@ -666,7 +666,7 @@ class RidgeCV:
         """Dự đoán y_hat trên dữ liệu mới."""
         if not self._fitted:
             raise ValueError("Mô hình chưa được fit. Hãy gọi fit() trước.")
-        X_df = _as_numeric_dataframe(X, feature_names)
+        X_df = as_numeric_dataframe(X, feature_names)
         missing = set(self.feature_names_) - set(X_df.columns)
         if missing:
             raise ValueError(f"Dữ liệu predict thiếu các biến: {missing}")
@@ -745,9 +745,9 @@ class LassoCV:
         Chạy k-fold CV để tìm λ tốt nhất, rồi fit lại trên toàn bộ train.
         Dùng lại hàm kfold_cv từ part1 — chọn λ theo CV(k).
         """
-        X_df = _as_numeric_dataframe(X, feature_names)
-        y_arr = _as_numeric_vector(y)
-        _check_xy_shape(X_df, y_arr)
+        X_df = as_numeric_dataframe(X, feature_names)
+        y_arr = as_numeric_vector(y)
+        check_xy_shape(X_df, y_arr)
 
         self.feature_names_ = X_df.columns.tolist()
         X_np = X_df.to_numpy()
@@ -791,7 +791,7 @@ class LassoCV:
         """Dự đoán y_hat trên dữ liệu mới."""
         if not self._fitted:
             raise ValueError("Mô hình chưa được fit. Hãy gọi fit() trước.")
-        X_df = _as_numeric_dataframe(X, feature_names)
+        X_df = as_numeric_dataframe(X, feature_names)
         missing = set(self.feature_names_) - set(X_df.columns)
         if missing:
             raise ValueError(f"Dữ liệu predict thiếu các biến: {missing}")

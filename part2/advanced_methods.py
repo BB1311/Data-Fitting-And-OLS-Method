@@ -16,9 +16,9 @@ from part1.ridge_lasso import ridge_fit
 from part1.cross_validation import kfold_cv
 from part2.model_comparison import (
     evaluate_model,
-    _as_numeric_dataframe,
-    _as_numeric_vector,
-    _check_xy_shape,
+    as_numeric_dataframe,
+    as_numeric_vector,
+    check_xy_shape,
 )
 
 
@@ -197,9 +197,9 @@ class KernelRidgeRegressor:
         X : (n, p) — ma trận đặc trưng (chưa có cột intercept)
         y : (n,)
         """
-        X_df   = _as_numeric_dataframe(X)        
-        y_arr  = _as_numeric_vector(y)           
-        _check_xy_shape(X_df, y_arr)  
+        X_df   = as_numeric_dataframe(X)        
+        y_arr  = as_numeric_vector(y)           
+        check_xy_shape(X_df, y_arr)  
         
         X_np = X_df.to_numpy()          
 
@@ -233,7 +233,7 @@ class KernelRidgeRegressor:
             raise RuntimeError("Gọi fit() trước khi predict().")
 
 
-        X_df = _as_numeric_dataframe(X_new)
+        X_df = as_numeric_dataframe(X_new)
         # KernelRidge không lưu feature_names_ riêng, nhưng có thể kiểm tra số cột khớp với X_train_
         if X_df.shape[1] != self.X_train_.shape[1]:
             raise ValueError(
@@ -299,9 +299,9 @@ class KernelRidgeRegressor:
         -------
         dict: best_lam, best_length_scale, best_cv_mse, results_grid
         """
-        X_df  = _as_numeric_dataframe(X)          
-        y_arr = _as_numeric_vector(y)             
-        _check_xy_shape(X_df, y_arr)             
+        X_df  = as_numeric_dataframe(X)          
+        y_arr = as_numeric_vector(y)             
+        check_xy_shape(X_df, y_arr)             
 
         X = X_df.to_numpy(dtype=float)           
         y = y_arr                                 
@@ -378,9 +378,9 @@ def compare_krr_vs_ols(
     So sánh Kernel Ridge (RBF) và OLS thông thường trên cùng dữ liệu.
     Tận dụng hàm kfold_cv từ Part 1 cho OLS.
     """
-    X_df  = _as_numeric_dataframe(X)          
-    y_arr = _as_numeric_vector(y)             
-    _check_xy_shape(X_df, y_arr)              
+    X_df  = as_numeric_dataframe(X)          
+    y_arr = as_numeric_vector(y)             
+    check_xy_shape(X_df, y_arr)              
     X = X_df.to_numpy(dtype=float)            
     y = y_arr
 
@@ -559,9 +559,9 @@ class BayesianLinearRegressor:
         Nếu sigma2=None khi khởi tạo, ước lượng σ² từ OLS residuals trước,
         sau đó cập nhật posterior.
         """
-        X_df   = _as_numeric_dataframe(X)
-        y_arr  = _as_numeric_vector(y)
-        _check_xy_shape(X_df, y_arr)
+        X_df   = as_numeric_dataframe(X)
+        y_arr  = as_numeric_vector(y)
+        check_xy_shape(X_df, y_arr)
 
         X_np = X_df.to_numpy()
         self.X_train_ = X_np.copy()
@@ -620,7 +620,7 @@ class BayesianLinearRegressor:
         if not self._fitted:
             raise RuntimeError("Gọi fit() trước khi predict().")
 
-        X_df = _as_numeric_dataframe(X_new)
+        X_df = as_numeric_dataframe(X_new)
         if X_df.shape[1] != self.X_train_.shape[1]:
             raise ValueError(
                 f"Số cột của X_new ({X_df.shape[1]}) không khớp với X_train ({self.X_train_.shape[1]})"
@@ -799,9 +799,9 @@ def compare_bayesian_vs_ols(
     So sánh Bayesian LR và OLS về R², RMSE trên tập train và CV MSE.
     Tận dụng kfold_cv từ Part 1 cho OLS.
     """
-    X_df  = _as_numeric_dataframe(X)          
-    y_arr = _as_numeric_vector(y)             
-    _check_xy_shape(X_df, y_arr)             
+    X_df  = as_numeric_dataframe(X)          
+    y_arr = as_numeric_vector(y)             
+    check_xy_shape(X_df, y_arr)             
     X = X_df.to_numpy(dtype=float)            
     y = y_arr
 
