@@ -823,7 +823,7 @@ class LassoCV:
         print(f"Hệ số (beta_hat): {self.coef_.shape[0]} tham số (bao gồm intercept)")
 
 # ======================================================================
-# TRÌNH TẠO ĐẶC ĐIỂM 1: POLYNOMIAL FEATURES GENNERATOR
+# TRÌNH TẠO ĐẶC ĐIỂM 1: POLYNOMIAL FEATURES GENERATOR
 # ======================================================================
 class PolynomialFeatureGenerator:
     """
@@ -831,15 +831,15 @@ class PolynomialFeatureGenerator:
     """
 
     def __init__(self, degree=2, top_k=15, use_correlation=True, verbose=True):
-        if not isinstance(degree, int) or degree < 2:
-            raise ValueError("degree phải là số nguyên >= 2.")
+        # FIX: Cho phép degree=1 để tiện đưa vào GridSearch kiểm tra baseline
+        if not isinstance(degree, int) or degree < 1:
+            raise ValueError("degree phải là số nguyên >= 1.")
         if top_k is not None and (not isinstance(top_k, int) or top_k < 1):
             raise ValueError("top_k phải là số nguyên dương hoặc None.")
             
         self.degree = degree
         self.top_k = top_k
         self.use_correlation = use_correlation
-
         self.verbose = verbose
 
         self.poly_cols_ = None
@@ -917,8 +917,8 @@ class PolynomialFeatureGenerator:
         new_cols = {}
         for d in range(2, self.degree + 1):
             for col in self.poly_cols_:
-                if col in X_df.columns:
-                    new_cols[f"{col}^{d}"] = X_df[col] ** d
+                # FIX: Đã xóa dòng if thừa vì chắc chắn cột tồn tại
+                new_cols[f"{col}^{d}"] = X_df[col] ** d
 
         new_df = pd.DataFrame(new_cols, index=X_df.index)
         new_df = new_df[self.new_col_names_] 
@@ -958,13 +958,13 @@ class PolynomialFeatureGenerator:
 # ======================================================================
 # TRÌNH TẠO ĐẶC TRƯNG 2: INTERACTION FEATURES GENERATOR
 # ======================================================================
-
 class InteractionFeatureGenerator:
     """
     Interaction Features — Chỉ sinh đặc trưng tương tác (nhân chéo) giữa các cột số khác nhau.
     """
 
     def __init__(self, degree=2, top_k=15, use_correlation=True, verbose=True):
+        # Biến tương tác cần ít nhất 2 biến nhân với nhau, nên degree bắt buộc >= 2
         if not isinstance(degree, int) or degree < 2:
             raise ValueError("degree phải là số nguyên >= 2.")
         if top_k is not None and (not isinstance(top_k, int) or top_k < 1):
@@ -1045,10 +1045,9 @@ class InteractionFeatureGenerator:
 
         for d in range(2, self.degree + 1):
             for cols in combinations(self.interact_cols_, d):
-                # FIX BUGS: Đã định nghĩa lại col_name trong scope này
                 col_name = "_x_".join(cols)
-                if all(c in X_df.columns for c in cols):
-                    new_cols[col_name] = X_df[list(cols)].prod(axis=1)
+                # FIX: Đã xóa dòng if thừa vì chắc chắn cột tồn tại
+                new_cols[col_name] = X_df[list(cols)].prod(axis=1)
 
         new_df = pd.DataFrame(new_cols, index=X_df.index)
         new_df = new_df[self.new_col_names_] 
