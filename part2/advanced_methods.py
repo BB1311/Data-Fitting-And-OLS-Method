@@ -14,7 +14,12 @@ from scipy import stats
 
 from part1.ridge_lasso import ridge_fit
 from part1.cross_validation import kfold_cv
-from part2.model_comparison import evaluate_model
+from part2.model_comparison import (
+    evaluate_model,
+    _as_numeric_dataframe,
+    _as_numeric_vector,
+    _check_xy_shape,
+)
 
 
 # ======================================================================
@@ -192,20 +197,23 @@ class KernelRidgeRegressor:
         X : (n, p) — ma trận đặc trưng (chưa có cột intercept)
         y : (n,)
         """
-        X = np.asarray(X, dtype=float)
-        y = np.asarray(y, dtype=float).ravel()
+        X_df   = _as_numeric_dataframe(X)        
+        y_arr  = _as_numeric_vector(y)           
+        _check_xy_shape(X_df, y_arr)  
+        
+        X_np = X_df.to_numpy()          
 
-        if X.ndim == 1:
-            X = X.reshape(-1, 1)
+        if X_np.ndim == 1:
+            X_np = X_np.reshape(-1, 1)
 
         # Bind tham số kernel rồi truyền vào solver
         self._kernel_fn = self._compute_kernel
-        res = _krr_core_solver(X, y, self._kernel_fn, self.lam)
+        res = _krr_core_solver(X_np, y_arr, self._kernel_fn, self.lam)
 
         # Lưu kết quả từ solver vào attributes của class
         self.alpha_   = res["alpha"]
         self.X_train_ = res["X_train"]
-        self.y_train_ = y.copy() 
+        self.y_train_ = y_arr.copy() 
         self._fitted = True
         return self
 
@@ -224,12 +232,19 @@ class KernelRidgeRegressor:
         if not self._fitted:
             raise RuntimeError("Gọi fit() trước khi predict().")
 
-        X_new = np.asarray(X_new, dtype=float)
-        if X_new.ndim == 1:
-            X_new = X_new.reshape(1, -1)
 
-        # K_new: (m, n)  →  mỗi hàng là độ tương đồng của 1 điểm test với toàn bộ train
-        K_new = self._compute_kernel(X_new, self.X_train_)
+        X_df = _as_numeric_dataframe(X_new)
+        # KernelRidge không lưu feature_names_ riêng, nhưng có thể kiểm tra số cột khớp với X_train_
+        if X_df.shape[1] != self.X_train_.shape[1]:
+            raise ValueError(
+                f"Số cột của X_new ({X_df.shape[1]}) không khớp với X_train ({self.X_train_.shape[1]})"
+            )
+        X_np = X_df.to_numpy()
+
+        if X_np.ndim == 1:
+            X_np = X_np.reshape(1, -1)
+
+        K_new = self._compute_kernel(X_np, self.X_train_)
         return K_new @ self.alpha_
 
     def evaluate(self, X: np.ndarray, y: np.ndarray, inverse_transform: bool = False) -> dict:
@@ -284,13 +299,18 @@ class KernelRidgeRegressor:
         -------
         dict: best_lam, best_length_scale, best_cv_mse, results_grid
         """
+        X_df  = _as_numeric_dataframe(X)          
+        y_arr = _as_numeric_vector(y)             
+        _check_xy_shape(X_df, y_arr)             
+
+        X = X_df.to_numpy(dtype=float)           
+        y = y_arr                                 
+        
         if lam_grid is None:
             lam_grid = [0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
         if ls_grid is None:
             ls_grid = [0.1, 0.5, 1.0, 2.0, 5.0] if kernel == 'rbf' else [None]
 
-        X = np.asarray(X, dtype=float)
-        y = np.asarray(y, dtype=float).ravel()
         n = len(y)
 
         # Tạo fold splits (tái dụng logic của kfold_cv)
@@ -358,8 +378,11 @@ def compare_krr_vs_ols(
     So sánh Kernel Ridge (RBF) và OLS thông thường trên cùng dữ liệu.
     Tận dụng hàm kfold_cv từ Part 1 cho OLS.
     """
-    X = np.asarray(X, dtype=float)
-    y = np.asarray(y, dtype=float).ravel()
+    X_df  = _as_numeric_dataframe(X)          
+    y_arr = _as_numeric_vector(y)             
+    _check_xy_shape(X_df, y_arr)              
+    X = X_df.to_numpy(dtype=float)            
+    y = y_arr
 
     # --- OLS (dùng kfold_cv từ Part 1) ---
     ols_cv = kfold_cv(X, y, k=k, model='ols', random_state=random_state)
@@ -536,23 +559,28 @@ class BayesianLinearRegressor:
         Nếu sigma2=None khi khởi tạo, ước lượng σ² từ OLS residuals trước,
         sau đó cập nhật posterior.
         """
-        X_design = self._make_design(X)
-        y = np.asarray(y, dtype=float).ravel()
+        X_df   = _as_numeric_dataframe(X)
+        y_arr  = _as_numeric_vector(y)
+        _check_xy_shape(X_df, y_arr)
+
+        X_np = X_df.to_numpy()
+        self.X_train_ = X_np.copy()
+        self.y_train_ = y_arr.copy()
+        
+        X_design = self._make_design(X_np)
+        y = np.asarray(y_arr, dtype=float).ravel()
         n, k = X_design.shape
 
         # --- Ước lượng σ² nếu chưa biết ---
         if self.sigma2 is None:
             # Dùng Ridge (λ nhỏ) từ Part 1 để tránh vấn đề rank khi n < k
-            res = ridge_fit(X, y, lam=1e-8)
+            res = ridge_fit(X_np, y, lam=1e-8)
             residuals = y - X_design @ res["beta_hat"]
             df = max(n - k, 1)
             self.sigma2_ = float(np.sum(residuals ** 2) / df)
         else:
             self.sigma2_ = float(self.sigma2)
 
-        self.X_train_ = X.copy()          
-        self.y_train_ = y.copy()         
-        
         # Gọi lõi toán học
         res = _bayesian_core_solver(
             X_design, y,
@@ -592,7 +620,14 @@ class BayesianLinearRegressor:
         if not self._fitted:
             raise RuntimeError("Gọi fit() trước khi predict().")
 
-        X_design = self._make_design(X_new)
+        X_df = _as_numeric_dataframe(X_new)
+        if X_df.shape[1] != self.X_train_.shape[1]:
+            raise ValueError(
+                f"Số cột của X_new ({X_df.shape[1]}) không khớp với X_train ({self.X_train_.shape[1]})"
+            )
+        X_np = X_df.to_numpy()
+    
+        X_design = self._make_design(X_np)
         y_mean = X_design @ self.m_n_
 
         if not return_std:
@@ -764,13 +799,16 @@ def compare_bayesian_vs_ols(
     So sánh Bayesian LR và OLS về R², RMSE trên tập train và CV MSE.
     Tận dụng kfold_cv từ Part 1 cho OLS.
     """
-    X = np.asarray(X, dtype=float)
-    y = np.asarray(y, dtype=float).ravel()
+    X_df  = _as_numeric_dataframe(X)          
+    y_arr = _as_numeric_vector(y)             
+    _check_xy_shape(X_df, y_arr)             
+    X = X_df.to_numpy(dtype=float)            
+    y = y_arr
 
     # OLS CV (Part 1)
     ols_cv = kfold_cv(X, y, k=k_cv, model='ols', random_state=random_state)
 
-    # Bayesian manual k-fold CV (không có hàm sẵn, tự viết)
+    # Bayesian manual k-fold CV
     n = len(y)
     rng = np.random.default_rng(random_state)
     indices = rng.permutation(n)
