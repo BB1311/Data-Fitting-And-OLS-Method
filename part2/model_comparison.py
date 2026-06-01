@@ -823,7 +823,7 @@ class LassoCV:
         print(f"Hệ số (beta_hat): {self.coef_.shape[0]} tham số (bao gồm intercept)")
 
 # ======================================================================
-# MÔ HÌNH 5: POLYNOMIAL FEATURES 
+# TRÌNH TẠO ĐẶC ĐIỂM 1: POLYNOMIAL FEATURES GENNERATOR
 # ======================================================================
 class PolynomialFeatureGenerator:
     """
@@ -931,7 +931,7 @@ class PolynomialFeatureGenerator:
         print("=" * width)
 
 # ======================================================================
-# MÔ HÌNH 6: INTERACTION FEATURES
+# TRÌNH TẠO ĐẶC TRƯNG 2: INTERACTION FEATURES GENERATOR
 # ======================================================================
 
 class InteractionFeatureGenerator:
