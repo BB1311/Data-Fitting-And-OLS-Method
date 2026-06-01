@@ -12,7 +12,7 @@ if parent_dir not in sys.path:
 
 from part1.ols_implementation import OLSRegressor, coef_inference, model_metrics, compute_aic, compute_bic, compute_r2
 from part1.ridge_lasso import ridge_fit, lasso_fit
-from part1.cross_validation import kfold_cv, _mae, _rmse
+from part1.cross_validation import kfold_cv, compute_mae, compute_rmse
 from part2.data_pipeline import run_vif_check
 
 
@@ -36,8 +36,8 @@ def evaluate_model(y_true, y_pred, inverse_transform=False):
         y_true = np.expm1(y_true)
         y_pred = np.expm1(y_pred)
 
-    mae = _mae(y_true, y_pred)
-    rmse = _rmse(y_true, y_pred)
+    mae = compute_mae(y_true, y_pred)
+    rmse = compute_rmse(y_true, y_pred)
     r2 = compute_r2(y_true, y_pred)
     return {"mae": mae, "rmse": rmse, "r2": r2}
 
