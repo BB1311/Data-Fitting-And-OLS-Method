@@ -5,12 +5,16 @@ advanced_methods.py
   2. Bayesian Linear Regression — ước lượng theo xác suất, trả về phân phối posterior
 """
 
+import os
 import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 from scipy import stats
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
 
 from part1.ridge_lasso import ridge_fit
 from part1.cross_validation import kfold_cv
