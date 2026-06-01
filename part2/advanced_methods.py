@@ -71,6 +71,60 @@ KERNELS = {
     'poly': _poly_kernel,
 }
 
+def _krr_core_solver(
+    X: np.ndarray,
+    y: np.ndarray,
+    kernel_fn,
+    lam: float,
+) -> dict:
+    """
+    Lõi toán học của Kernel Ridge Regression.
+
+    Giải hệ:
+        (K + λI) α = y   →   α = (K + λI)⁻¹ y
+
+    Trong đó K[i,j] = kernel_fn(xᵢ, xⱼ) là Gram matrix (n×n).
+    Dự đoán sau đó được tính bằng:
+        ŷ(x*) = k(x*)ᵀ α
+
+    Parameters
+    ----------
+    X         : np.ndarray (n, p) — dữ liệu train
+    y         : np.ndarray (n,)
+    kernel_fn : callable(X1, X2) -> np.ndarray — hàm kernel đã được bind tham số
+    lam       : float >= 0 — hệ số regularization
+
+    Returns
+    -------
+    dict với các key:
+        alpha    : np.ndarray (n,) — vector hệ số dual
+        X_train  : np.ndarray (n, p) — bản sao dữ liệu train (cần cho predict)
+        K_train  : np.ndarray (n, n) — Gram matrix trên tập train
+        lam      : float
+        n        : int
+        p        : int
+    """
+    n, p = X.shape
+
+    # 1. Tính Gram matrix K (n×n) — ma trận độ tương đồng giữa các điểm train
+    K = kernel_fn(X, X)
+
+    # 2. Giải (K + λI) α = y  →  α = (K + λI)⁻¹ y
+    A = K + lam * np.eye(n)
+    try:
+        alpha = np.linalg.solve(A, y)
+    except np.linalg.LinAlgError:
+        # Fallback lstsq nếu ma trận gần suy biến (lam quá nhỏ)
+        alpha, _, _, _ = np.linalg.lstsq(A, y, rcond=None)
+
+    return {
+        "alpha":   alpha,
+        "X_train": X.copy(),
+        "K_train": K,
+        "lam":     lam,
+        "n":       n,
+        "p":       p,
+    }
 
 class KernelRidgeRegressor:
     """
@@ -118,6 +172,8 @@ class KernelRidgeRegressor:
 
         self.alpha_ = None
         self.X_train_ = None
+        self.y_train_ = None
+        self._kernel_fn = None   # hàm kernel đã bind tham số
         self._fitted = False
 
     def _compute_kernel(self, X1: np.ndarray, X2: np.ndarray) -> np.ndarray:
@@ -142,20 +198,14 @@ class KernelRidgeRegressor:
         if X.ndim == 1:
             X = X.reshape(-1, 1)
 
-        n = X.shape[0]
-        self.X_train_ = X.copy()
+        # Bind tham số kernel rồi truyền vào solver
+        self._kernel_fn = self._compute_kernel
+        res = _krr_core_solver(X, y, self._kernel_fn, self.lam)
 
-        # 1. Tính Gram matrix K (n×n)
-        K = self._compute_kernel(X, X)
-
-        # 2. Giải (K + λI) α = y  →  α = (K + λI)⁻¹ y
-        A = K + self.lam * np.eye(n)
-        try:
-            self.alpha_ = np.linalg.solve(A, y)
-        except np.linalg.LinAlgError:
-            # Fallback dùng lstsq nếu ma trận gần suy biến
-            self.alpha_, _, _, _ = np.linalg.lstsq(A, y, rcond=None)
-
+        # Lưu kết quả từ solver vào attributes của class
+        self.alpha_   = res["alpha"]
+        self.X_train_ = res["X_train"]
+        self.y_train_ = y.copy() 
         self._fitted = True
         return self
 
@@ -203,6 +253,12 @@ class KernelRidgeRegressor:
         print("-" * 30)
         print(f"Số điểm dữ liệu train: {self.X_train_.shape[0]}")
         print(f"Số đặc trưng: {self.X_train_.shape[1]}")
+        
+        # --- Tự động tính metrics trên tập train ---
+        metrics = self.evaluate(self.X_train_, self.y_train_)
+        print(f"  MAE  (train): {metrics['mae']:.6f}")
+        print(f"  RMSE (train): {metrics['rmse']:.6f}")
+        print(f"  R²   (train): {metrics['r2']:.6f}")
 
     @classmethod
     def cv_search(
@@ -213,6 +269,8 @@ class KernelRidgeRegressor:
         ls_grid: list = None,
         k: int = 5,
         kernel: str = 'rbf',
+        degree: int = 2,           
+        coef0: float = 1.0,       
         random_state: int = 42,
         verbose: bool = True,
     ) -> dict:
@@ -256,9 +314,14 @@ class KernelRidgeRegressor:
                         indices[:boundaries[i]],
                         indices[boundaries[i + 1]:]
                     ])
+                    
                     model_kw = {'kernel': kernel, 'lam': lam}
-                    if ls is not None:
+                    if kernel == 'rbf' and ls is not None:
                         model_kw['length_scale'] = ls
+                    elif kernel == 'poly':
+                        model_kw['degree'] = degree
+                        model_kw['coef0'] = coef0
+                        
                     m = cls(**model_kw).fit(X[train_idx], y[train_idx])
                     y_pred = m.predict(X[val_idx])
                     fold_mses.append(float(np.mean((y[val_idx] - y_pred) ** 2)))
@@ -340,6 +403,73 @@ def compare_krr_vs_ols(
 # 2. BAYESIAN LINEAR REGRESSION
 # ======================================================================
 
+def _bayesian_core_solver(
+    X_design: np.ndarray,
+    y: np.ndarray,
+    alpha: float,
+    sigma2: float,
+    fit_intercept: bool = True,
+) -> dict:
+    """
+    Lõi toán học của Bayesian Linear Regression.
+
+    Prior:
+        β ~ N(m₀, S₀)  với  m₀ = 0,  S₀ = (σ²/α)·I
+        (intercept không bị penalize nếu fit_intercept=True)
+
+    Posterior:
+        Sₙ = (S₀⁻¹ + (1/σ²) XᵀX)⁻¹
+        mₙ = Sₙ (S₀⁻¹ m₀ + (1/σ²) Xᵀy)
+
+    Parameters
+    ----------
+    X_design : (n, k) — ma trận design đã có cột 1 (nếu fit_intercept=True).
+    y        : (n,)
+    alpha    : precision của prior.
+    sigma2   : phương sai nhiễu σ².
+    fit_intercept : bool — có penalize intercept hay không.
+
+    Returns
+    -------
+    dict:
+        m_n     : posterior mean (k,)
+        S_n     : posterior covariance (k, k)
+        sigma2  : float — giữ nguyên σ² đầu vào
+        k       : int — số tham số
+    """
+    k = X_design.shape[1]
+
+    # --- Prior: β ~ N(m₀, S₀)  với  S₀ = (σ²/α)·I ---
+    # Tương đương: precision matrix S₀⁻¹ = (α/σ²)·I
+    # Khi fit_intercept=True, ta KHÔNG penalize intercept
+    prior_precision = (alpha / sigma2) * np.eye(k)
+    if fit_intercept:
+        prior_precision[0, 0] = 0.0   # không penalize intercept
+
+    m_0 = np.zeros(k)
+
+    # --- Posterior: Sₙ = (S₀⁻¹ + (1/σ²) XᵀX)⁻¹ ---
+    # Posterior precision = prior_precision + (1/σ²) XᵀX
+    XtX = X_design.T @ X_design
+    posterior_precision = prior_precision + XtX / sigma2
+
+    try:
+        S_n = np.linalg.inv(posterior_precision)
+    except np.linalg.LinAlgError:
+        S_n = np.linalg.pinv(posterior_precision)
+
+    # Posterior mean:  mₙ = Sₙ (S₀⁻¹ m₀ + (1/σ²) Xᵀy)
+    Xty = X_design.T @ y
+    rhs = prior_precision @ m_0 + Xty / sigma2
+    m_n = S_n @ rhs
+
+    return {
+        "m_n":    m_n,
+        "S_n":    S_n,
+        "sigma2": sigma2,
+        "k":      k,
+    }
+    
 class BayesianLinearRegressor:
     """
     Bayesian Linear Regression với Gaussian conjugate prior.
@@ -386,6 +516,8 @@ class BayesianLinearRegressor:
         self.m_n_ = None
         self.S_n_ = None
         self.sigma2_ = None
+        self.X_train_ = None
+        self.y_train_ = None
         self._X_design = None
         self._fitted = False
 
@@ -418,29 +550,19 @@ class BayesianLinearRegressor:
         else:
             self.sigma2_ = float(self.sigma2)
 
-        # --- Prior: β ~ N(m₀, S₀)  với  S₀ = (σ²/α)·I ---
-        # Tương đương: precision matrix S₀⁻¹ = (α/σ²)·I
-        # Khi fit_intercept=True, ta KHÔNG penalize intercept (giống Ridge)
-        prior_precision = (self.alpha / self.sigma2_) * np.eye(k)
-        if self.fit_intercept:
-            prior_precision[0, 0] = 0.0   # Intercept không bị penalize
+        self.X_train_ = X.copy()          
+        self.y_train_ = y.copy()         
+        
+        # Gọi lõi toán học
+        res = _bayesian_core_solver(
+            X_design, y,
+            alpha=self.alpha,
+            sigma2=self.sigma2_,
+            fit_intercept=self.fit_intercept,
+        )
 
-        m_0 = np.zeros(k)   # Prior mean = 0
-
-        # --- Posterior covariance: Sₙ = (S₀⁻¹ + (1/σ²) XᵀX)⁻¹ ---
-        XtX = X_design.T @ X_design
-        posterior_precision = prior_precision + XtX / self.sigma2_
-
-        try:
-            self.S_n_ = np.linalg.inv(posterior_precision)
-        except np.linalg.LinAlgError:
-            self.S_n_ = np.linalg.pinv(posterior_precision)
-
-        # --- Posterior mean: mₙ = Sₙ (S₀⁻¹ m₀ + (1/σ²) Xᵀy) ---
-        Xty = X_design.T @ y
-        rhs = prior_precision @ m_0 + Xty / self.sigma2_
-        self.m_n_ = self.S_n_ @ rhs
-
+        self.m_n_ = res["m_n"]
+        self.S_n_ = res["S_n"]
         self._X_design = X_design
         self._fitted = True
         return self
@@ -522,6 +644,13 @@ class BayesianLinearRegressor:
         print(f"Alpha (prior precision): {self.alpha}")
         print(f"Sigma2 (noise variance): {self.sigma2_:.6f}")
         print(f"Fit intercept: {self.fit_intercept}")
+        
+        # --- Tự động tính metrics trên tập train ---
+        metrics = self.evaluate(self.X_train_, self.y_train_)
+        print(f"  MAE  (train): {metrics['mae']:.6f}")
+        print(f"  RMSE (train): {metrics['rmse']:.6f}")
+        print(f"  R²   (train): {metrics['r2']:.6f}")
+    
         print("-" * 30)
         self.coef_summary(feature_names=feature_names, verbose=True)
 

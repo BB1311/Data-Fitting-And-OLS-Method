@@ -26,7 +26,7 @@ from part2.advanced_methods import (
     BayesianLinearRegressor,
     _rbf_kernel,
     _poly_kernel,
-    compare_krr_vs_ridge,
+    compare_krr_vs_ols,
     compare_bayesian_vs_ols,
 )
 from part1.ridge_lasso import ridge_fit
@@ -191,6 +191,10 @@ class TestKernelFunctions:
 # 3. KernelRidgeRegressor — CV Search
 # ======================================================================
 
+# ======================================================================
+# 3. KernelRidgeRegressor — CV Search & Comparison
+# ======================================================================
+
 class TestKRRCV:
 
     def test_cv_search_returns_correct_keys(self):
@@ -211,14 +215,26 @@ class TestKRRCV:
         )
         assert result['best_lam'] in lam_grid
 
-    def test_compare_krr_vs_ridge_keys(self):
-        """compare_krr_vs_ridge() phải trả về đúng keys."""
+    def test_compare_krr_vs_ols_keys(self):
+        """compare_krr_vs_ols() phải trả về đúng keys và winner hợp lệ."""
         X, y, _ = _make_linear(n=40, p=2, noise=0.5)
-        result = compare_krr_vs_ridge(X, y, lam=1.0, k=3, verbose=False)
-        for key in ('ridge_cv_mse', 'krr_cv_mse', 'winner'):
-            assert key in result
-        assert result['winner'] in ('krr', 'ridge')
+        result = compare_krr_vs_ols(X, y, lam=1.0, k=3, verbose=False)
+        for key in ('ols_cv_mse', 'krr_cv_mse', 'winner'):
+            assert key in result, f"Thiếu key '{key}'"
+        assert result['winner'] in ('ols', 'krr'), \
+            f"winner phải là 'ols' hoặc 'krr', nhận được '{result['winner']}'"
 
+    def test_compare_krr_vs_ols_krr_wins_on_nonlinear(self):
+        """
+        Trên dữ liệu phi tuyến (sin), KRR phải thắng OLS rõ rệt.
+        Đây là lý do tồn tại của Kernel Regression.
+        """
+        X, y = _make_nonlinear(n=100, seed=42)
+        result = compare_krr_vs_ols(X, y, lam=0.01, length_scale=1.0, k=5, verbose=False)
+        assert result['winner'] == 'krr', (
+            f"KRR phải thắng OLS trên dữ liệu phi tuyến. "
+            f"KRR MSE={result['krr_cv_mse']:.4f}, OLS MSE={result['ols_cv_mse']:.4f}"
+        )
 
 # ======================================================================
 # 4. BayesianLinearRegressor — Core & Math
