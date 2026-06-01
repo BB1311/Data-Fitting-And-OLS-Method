@@ -831,8 +831,8 @@ class PolynomialFeatureGenerator:
     """
 
     def __init__(self, degree=2, top_k=15, use_correlation=True, verbose=True):
-        if not isinstance(degree, int) or degree < 1:
-            raise ValueError("degree phải là số nguyên >= 1.")
+        if not isinstance(degree, int) or degree < 2:
+            raise ValueError("degree phải là số nguyên >= 2.")
         if top_k is not None and (not isinstance(top_k, int) or top_k < 1):
             raise ValueError("top_k phải là số nguyên dương hoặc None.")
             
@@ -965,8 +965,8 @@ class InteractionFeatureGenerator:
     """
 
     def __init__(self, degree=2, top_k=15, use_correlation=True, verbose=True):
-        if not isinstance(degree, int) or degree < 1:
-            raise ValueError("degree phải là số nguyên >= 1.")
+        if not isinstance(degree, int) or degree < 2:
+            raise ValueError("degree phải là số nguyên >= 2.")
         if top_k is not None and (not isinstance(top_k, int) or top_k < 1):
             raise ValueError("top_k phải là số nguyên dương hoặc None.")
             
