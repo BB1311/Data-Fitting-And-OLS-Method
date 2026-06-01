@@ -885,6 +885,11 @@ class PolynomialFeatureGenerator:
             
         # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa dữ liệu mới truyền vào
         X_df = _as_numeric_dataframe(X)
+
+        missing = set(self.poly_cols_) - set(X_df.columns)
+        if missing:
+            raise ValueError(f"Transform data thiếu các cột gốc: {missing}. "
+                             "Hãy đảm bảo dữ liệu mới có đầy đủ các cột đã dùng khi fit.")
         
         if self.degree == 1 or not self.poly_cols_:
             return X_df.copy()
@@ -988,6 +993,11 @@ class InteractionFeatureGenerator:
             
         # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa dữ liệu mới truyền vào
         X_df = _as_numeric_dataframe(X)
+        
+        missing = set(self.interact_cols_) - set(X_df.columns)
+        if missing:
+            raise ValueError(f"Transform data thiếu các cột gốc: {missing}. "
+                             "Hãy đảm bảo dữ liệu mới có đầy đủ các cột đã dùng khi fit.")
         
         if not self.interact_cols_:
             return X_df.copy()
