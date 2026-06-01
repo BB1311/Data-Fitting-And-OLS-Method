@@ -855,8 +855,8 @@ class PolynomialFeatureGenerator:
 
         # Lọc top_k theo Hệ số biến thiên (CV)
         if self.top_k is not None and len(num_cols) > self.top_k:
-            means = X[num_cols].mean().replace(0, 1) 
-            cv = X[num_cols].std() / means.abs()
+            means = X[num_cols].mean().abs() + 1e-8
+            cv = X[num_cols].std() / means
             num_cols = cv.nlargest(self.top_k).index.tolist()
 
         self.poly_cols_ = num_cols
@@ -948,23 +948,18 @@ class InteractionFeatureGenerator:
 
         # Lọc top_k theo Hệ số biến thiên (CV)
         if self.top_k is not None and len(num_cols) > self.top_k:
-            means = X[num_cols].mean().replace(0, 1)
-            cv = X[num_cols].std() / means.abs()
+            means = X[num_cols].mean().abs() + 1e-8
+            cv = X[num_cols].std() / means
             num_cols = cv.nlargest(self.top_k).index.tolist()
 
         self.interact_cols_ = num_cols
         self.new_col_names_ = []
 
         if self.interact_cols_:
-            # Tương tác bậc 2 (vd: x1 * x2)
-            if self.degree >= 2:
-                for col_i, col_j in combinations(self.interact_cols_, 2):
-                    self.new_col_names_.append(f"{col_i}_x_{col_j}")
-
-            # Tương tác bậc 3 (vd: x1 * x2 * x3)
-            if self.degree >= 3:
-                for col_i, col_j, col_k in combinations(self.interact_cols_, 3):
-                    self.new_col_names_.append(f"{col_i}_x_{col_j}_x_{col_k}")
+            for d in range(2, self.degree + 1):
+                for cols in combinations(self.interact_cols_, d):
+                    col_name = "_x_".join(cols)
+                    self.new_col_names_.append(col_name)
 
         self.feature_names_ = X.columns.tolist() + self.new_col_names_
 
@@ -979,18 +974,12 @@ class InteractionFeatureGenerator:
             return X.copy()
 
         new_cols = {}
-        
-        # Tương tác bậc 2
-        if self.degree >= 2:
-            for col_i, col_j in combinations(self.interact_cols_, 2):
-                if col_i in X.columns and col_j in X.columns:
-                    new_cols[f"{col_i}_x_{col_j}"] = X[col_i] * X[col_j]
 
-        # Tương tác bậc 3
-        if self.degree >= 3:
-            for col_i, col_j, col_k in combinations(self.interact_cols_, 3):
-                if col_i in X.columns and col_j in X.columns and col_k in X.columns:
-                    new_cols[f"{col_i}_x_{col_j}_x_{col_k}"] = X[col_i] * X[col_j] * X[col_k]
+        for d in range(2, self.degree + 1):
+            for cols in combinations(self.interact_cols_, d):
+                if all(c in X.columns for c in cols):
+                    col_name = "_x_".join(cols)
+                    new_cols[col_name] = X[list(cols)].prod(axis=1)
 
         new_df = pd.DataFrame(new_cols, index=X.index)
         new_df = new_df.reindex(columns=self.new_col_names_, fill_value=0)
