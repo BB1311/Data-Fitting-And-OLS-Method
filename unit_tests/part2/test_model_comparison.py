@@ -2,9 +2,9 @@ import pytest
 import numpy as np
 import pandas as pd
 from part2.model_comparison import (
-    _as_numeric_dataframe,
-    _as_numeric_vector,
-    _check_xy_shape,
+    as_numeric_dataframe,
+    as_numeric_vector,
+    check_xy_shape,
     _fit_ols,
     _safe_model_metrics,
     ols_coefficient_table,
@@ -20,7 +20,7 @@ from part2.model_comparison import (
 def test_as_numeric_dataframe_valid():
     """Kiểm tra xử lý đầu vào hợp lệ và tự động sinh tên cột."""
     X = [[1, 2], [3, 4]]
-    df = _as_numeric_dataframe(X, feature_names=["A", "B"])
+    df = as_numeric_dataframe(X, feature_names=["A", "B"])
     assert isinstance(df, pd.DataFrame)
     assert list(df.columns) == ["A", "B"]
     assert df.dtypes.iloc[0] == float
@@ -29,19 +29,19 @@ def test_as_numeric_dataframe_invalid_type():
     """Kiểm tra loại bỏ dữ liệu không phải dạng số."""
     X = pd.DataFrame({"A": [1, 2], "B": ["a", "b"]})
     with pytest.raises(ValueError, match="OLS chỉ nhận biến đã mã hóa thành số"):
-        _as_numeric_dataframe(X)
+        as_numeric_dataframe(X)
 
 def test_as_numeric_dataframe_nan():
     """Kiểm tra báo lỗi khi có giá trị NaN."""
     X = pd.DataFrame({"A": [1, np.nan]})
     with pytest.raises(ValueError, match="X có NaN hoặc \\+/-inf"):
-        _as_numeric_dataframe(X)
+        as_numeric_dataframe(X)
 
 # --- Tests for _as_numeric_vector ---
 def test_as_numeric_vector_valid():
     """Kiểm tra chuyển y thành vector số hợp lệ."""
     y = [1, 2, 3]
-    y_arr = _as_numeric_vector(y)
+    y_arr = as_numeric_vector(y)
     assert isinstance(y_arr, np.ndarray)
     assert y_arr.ndim == 1
     assert y_arr.dtype == float
@@ -50,7 +50,7 @@ def test_as_numeric_vector_invalid():
     """Kiểm tra báo lỗi khi target có NaN."""
     y = [1, np.nan, 3]
     with pytest.raises(ValueError, match="y có NaN hoặc \\+/-inf"):
-        _as_numeric_vector(y)
+        as_numeric_vector(y)
 
 # --- Tests for _check_xy_shape ---
 def test_check_xy_shape_valid():
@@ -58,14 +58,14 @@ def test_check_xy_shape_valid():
     X = pd.DataFrame(np.zeros((5, 2)))
     y = np.zeros(5)
     # Should not raise exception
-    _check_xy_shape(X, y)
+    check_xy_shape(X, y)
 
 def test_check_xy_shape_invalid():
     """Kiểm tra báo lỗi khi X và y khác số lượng dòng."""
     X = pd.DataFrame(np.zeros((5, 2)))
     y = np.zeros(4)
     with pytest.raises(ValueError, match="X và y không cùng số dòng"):
-        _check_xy_shape(X, y)
+        check_xy_shape(X, y)
 
 # --- Tests for _fit_ols ---
 def test_fit_ols_basic():

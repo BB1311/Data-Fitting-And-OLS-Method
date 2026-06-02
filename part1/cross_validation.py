@@ -9,13 +9,13 @@ from part1.ols_implementation import OLSRegressor, compute_r2
 from part1.ridge_lasso import ridge_fit, lasso_fit
 
 # HÀM TIỆN ÍCH
-def _mse(y_true, y_pred):
+def compute_mse(y_true, y_pred):
     return float(np.mean((y_true - y_pred) ** 2))
 
-def _rmse(y_true, y_pred):
-    return float(np.sqrt(_mse(y_true, y_pred)))
+def compute_rmse(y_true, y_pred):
+    return float(np.sqrt(compute_mse(y_true, y_pred)))
 
-def _mae(y_true, y_pred):
+def compute_mae(y_true, y_pred):
     return float(np.mean(np.abs(y_true - y_pred)))
 
 # HÀM CHÍNH: k-FOLD CROSS-VALIDATION
@@ -105,9 +105,9 @@ def kfold_cv(
             beta  = res["beta_hat"]
             y_pred = np.column_stack([np.ones(len(X_val)), X_val]) @ beta
 
-        fold_mse.append(_mse(y_val, y_pred))
-        fold_rmse.append(_rmse(y_val, y_pred))
-        fold_mae.append(_mae(y_val, y_pred))
+        fold_mse.append(compute_mse(y_val, y_pred))
+        fold_rmse.append(compute_rmse(y_val, y_pred))
+        fold_mae.append(compute_mae(y_val, y_pred))
         if len(y_val) < 2:
             r2 = np.nan  # không xác định được R² cho 1 điểm
         else:
