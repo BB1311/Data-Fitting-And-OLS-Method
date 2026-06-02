@@ -3,7 +3,7 @@ import sys
 
 import numpy as np
 import pandas as pd
-
+from itertools import combinations
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -199,7 +199,6 @@ def ols_coefficient_table(X, y, feature_names=None):
             "ci_upper": inference["ci_upper"],
         }
     )
-
 
 # ======================================================================
 # MÔ HÌNH 1: OLS CƠ BẢN (tất cả biến sau pipeline)
@@ -820,3 +819,265 @@ class LassoCV:
         print(f"Số hệ số ≠ 0: {self.n_nonzero_}/{len(self.feature_names_)}")
         print("-" * 30)
         print(f"Hệ số (beta_hat): {self.coef_.shape[0]} tham số (bao gồm intercept)")
+
+# ======================================================================
+# TRÌNH TẠO ĐẶC ĐIỂM 1: POLYNOMIAL FEATURES GENERATOR
+# ======================================================================
+class PolynomialFeatureGenerator:
+    """
+    Polynomial Features — Chỉ sinh đặc trưng đa thức (lũy thừa) từ các cột số.
+    """
+
+    def __init__(self, degree=2, top_k=15, use_correlation=True, verbose=True):
+        # FIX: Cho phép degree=1 để tiện đưa vào GridSearch kiểm tra baseline
+        if not isinstance(degree, int) or degree < 1:
+            raise ValueError("degree phải là số nguyên >= 1.")
+        if top_k is not None and (not isinstance(top_k, int) or top_k < 1):
+            raise ValueError("top_k phải là số nguyên dương hoặc None.")
+            
+        self.degree = degree
+        self.top_k = top_k
+        self.use_correlation = use_correlation
+        self.verbose = verbose
+
+        self.poly_cols_ = None
+        self.new_col_names_ = None
+        self.feature_names_ = None
+
+    def fit(self, X, y=None):
+        # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa X thành DataFrame số
+        X_df = _as_numeric_dataframe(X)
+
+        if self.degree == 1:
+            self.poly_cols_ = []
+            self.new_col_names_ = []
+            self.feature_names_ = X_df.columns.tolist() 
+            return self
+
+        # Lọc cột số liên tục (Lúc này X_df đã đảm bảo là số)
+        num_cols = X_df.columns.tolist()
+        num_cols = [c for c in num_cols if X_df[c].nunique() > 2]
+
+        # Lọc top_k theo Hệ số biến thiên (CV)
+        if self.top_k is not None and len(num_cols) > self.top_k:
+            if self.use_correlation and y is not None:
+                # Cách 1: Dùng hệ số tương quan với y (Ưu tiên)
+                y_series = pd.Series(np.asarray(y).ravel())
+                correlations = X_df[num_cols].apply(lambda col: col.corr(y_series))
+                num_cols = correlations.abs().nlargest(self.top_k).index.tolist()
+                
+                if self.verbose:
+                    print(f"  [Lọc biến] Đã giữ lại top {self.top_k} biến dựa trên Correlation với y.")
+            else:
+                # Cách 2: Dùng hệ số biến thiên CV (Fallback)
+                means = X_df[num_cols].mean().abs() + 1e-8
+                cv = X_df[num_cols].std() / means
+                num_cols = cv.nlargest(self.top_k).index.tolist()
+                
+                if self.verbose:
+                    reason = "không truyền y" if self.use_correlation else "use_correlation=False"
+                    print(f"  [Lọc biến] Do {reason}, đã giữ lại top {self.top_k} biến dựa trên CV.")
+
+        self.poly_cols_ = num_cols
+        self.new_col_names_ = []
+
+        if self.poly_cols_:
+            # Duyệt từ bậc 2 đến degree để sinh tên biến lũy thừa
+            for d in range(2, self.degree + 1):
+                for col in self.poly_cols_:
+                    self.new_col_names_.append(f"{col}^{d}")
+
+        self.feature_names_ = X_df.columns.tolist() + self.new_col_names_
+
+        if self.verbose and self.new_col_names_:
+            print(f"  [Polynomial] {len(self.poly_cols_)} cột gốc → {len(self.new_col_names_)} features mới (degree={self.degree})")
+        
+        if self.verbose and len(self.new_col_names_) > 100:
+            print(f"  [WARNING]: Tạo {len(self.new_col_names_)} đặc trưng mới, có thể gây overfitting!")
+        
+        return self
+
+    def transform(self, X):
+        if self.poly_cols_ is None:
+            raise ValueError("Mô hình chưa được fit.")
+            
+        # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa dữ liệu mới truyền vào
+        X_df = _as_numeric_dataframe(X)
+
+        missing = set(self.poly_cols_) - set(X_df.columns)
+        if missing:
+            raise ValueError(f"Transform data thiếu các cột gốc: {missing}. "
+                             "Hãy đảm bảo dữ liệu mới có đầy đủ các cột đã dùng khi fit.")
+        
+        if self.degree == 1 or not self.poly_cols_:
+            return X_df.copy()
+
+        new_cols = {}
+        for d in range(2, self.degree + 1):
+            for col in self.poly_cols_:
+                # FIX: Đã xóa dòng if thừa vì chắc chắn cột tồn tại
+                new_cols[f"{col}^{d}"] = X_df[col] ** d
+
+        new_df = pd.DataFrame(new_cols, index=X_df.index)
+        new_df = new_df[self.new_col_names_] 
+        
+        return pd.concat([X_df, new_df], axis=1)
+
+    def fit_transform(self, X, y=None):
+        return self.fit(X, y).transform(X)
+
+    def summary(self):
+        if self.poly_cols_ is None:
+            print("Mô hình chưa được fit.")
+            return
+
+        width = 55
+        print("=" * width)
+        print("   POLYNOMIAL FEATURES (ĐA THỨC)".center(width))
+        print("=" * width)
+        print(f"  {'Bậc đa thức (degree)':<35} {self.degree}")
+        print(f"  {'Số cột gốc tham gia':<35} {len(self.poly_cols_)}")
+        print(f"  {'Số đặc trưng mới sinh ra':<35} {len(self.new_col_names_)}")
+        print(f"  {'Tổng biến sau mở rộng':<35} {len(self.feature_names_)}")
+        print("-" * width)
+
+        print("  Cột gốc được chọn:")
+        for i, col in enumerate(self.poly_cols_, 1):
+            print(f"    {i:>2}. {col}")
+        print("-" * width)
+
+        print("  Đặc trưng mới (Top 10):")
+        for i, col in enumerate(self.new_col_names_[:10], 1):
+            print(f"    {i:>2}. {col}")
+        if len(self.new_col_names_) > 10:
+            print(f"       ... và {len(self.new_col_names_) - 10} đặc trưng khác.")
+        print("=" * width)
+
+# ======================================================================
+# TRÌNH TẠO ĐẶC TRƯNG 2: INTERACTION FEATURES GENERATOR
+# ======================================================================
+class InteractionFeatureGenerator:
+    """
+    Interaction Features — Chỉ sinh đặc trưng tương tác (nhân chéo) giữa các cột số khác nhau.
+    """
+
+    def __init__(self, degree=2, top_k=15, use_correlation=True, verbose=True):
+        # Biến tương tác cần ít nhất 2 biến nhân với nhau, nên degree bắt buộc >= 2
+        if not isinstance(degree, int) or degree < 2:
+            raise ValueError("degree phải là số nguyên >= 2.")
+        if top_k is not None and (not isinstance(top_k, int) or top_k < 1):
+            raise ValueError("top_k phải là số nguyên dương hoặc None.")
+            
+        self.degree = degree
+        self.top_k = top_k
+        self.use_correlation = use_correlation 
+        self.verbose = verbose
+
+        self.interact_cols_ = None
+        self.new_col_names_ = None
+        self.feature_names_ = None
+
+    def fit(self, X, y=None):
+        # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa X thành DataFrame số
+        X_df = _as_numeric_dataframe(X)
+
+        # Lọc cột số liên tục (Lúc này X_df đã đảm bảo là số)
+        num_cols = X_df.columns.tolist()
+        num_cols = [c for c in num_cols if X_df[c].nunique() > 2]
+
+        # Lọc top_k theo Hệ số biến thiên (CV)
+        if self.top_k is not None and len(num_cols) > self.top_k:
+            if self.use_correlation and y is not None:
+                # Cách 1: Dùng hệ số tương quan với y (Ưu tiên)
+                y_series = pd.Series(np.asarray(y).ravel())
+                correlations = X_df[num_cols].apply(lambda col: col.corr(y_series))
+                num_cols = correlations.abs().nlargest(self.top_k).index.tolist()
+                
+                if self.verbose:
+                    print(f"  [Lọc biến] Đã giữ lại top {self.top_k} biến dựa trên Correlation với y.")
+            else:
+                # Cách 2: Dùng hệ số biến thiên CV (Fallback)
+                means = X_df[num_cols].mean().abs() + 1e-8
+                cv = X_df[num_cols].std() / means
+                num_cols = cv.nlargest(self.top_k).index.tolist()
+                
+                if self.verbose:
+                    reason = "không truyền y" if self.use_correlation else "use_correlation=False"
+                    print(f"  [Lọc biến] Do {reason}, đã giữ lại top {self.top_k} biến dựa trên CV.")
+
+        self.interact_cols_ = num_cols
+        self.new_col_names_ = []
+
+        if self.interact_cols_:
+            for d in range(2, self.degree + 1):
+                for cols in combinations(self.interact_cols_, d):
+                    col_name = "_x_".join(cols)
+                    self.new_col_names_.append(col_name)
+
+        self.feature_names_ = X_df.columns.tolist() + self.new_col_names_
+
+        if self.verbose and self.new_col_names_:
+            print(f"  [Interaction] {len(self.interact_cols_)} cột gốc → {len(self.new_col_names_)} features mới (degree={self.degree})")
+
+        if self.verbose and len(self.new_col_names_) > 100:
+            print(f"  [WARNING]: Tạo {len(self.new_col_names_)} đặc trưng mới, có thể gây overfitting!")
+            
+        return self
+
+    def transform(self, X):
+        if self.interact_cols_ is None:
+            raise ValueError("Mô hình chưa được fit.")
+            
+        # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa dữ liệu mới truyền vào
+        X_df = _as_numeric_dataframe(X)
+        
+        missing = set(self.interact_cols_) - set(X_df.columns)
+        if missing:
+            raise ValueError(f"Transform data thiếu các cột gốc: {missing}. "
+                             "Hãy đảm bảo dữ liệu mới có đầy đủ các cột đã dùng khi fit.")
+        
+        if not self.interact_cols_:
+            return X_df.copy()
+
+        new_cols = {}
+
+        for d in range(2, self.degree + 1):
+            for cols in combinations(self.interact_cols_, d):
+                col_name = "_x_".join(cols)
+                # FIX: Đã xóa dòng if thừa vì chắc chắn cột tồn tại
+                new_cols[col_name] = X_df[list(cols)].prod(axis=1)
+
+        new_df = pd.DataFrame(new_cols, index=X_df.index)
+        new_df = new_df[self.new_col_names_] 
+        
+        return pd.concat([X_df, new_df], axis=1)
+
+    def fit_transform(self, X, y=None):
+        return self.fit(X, y).transform(X)
+
+    def summary(self):
+        if self.interact_cols_ is None:
+            print("Mô hình chưa được fit.")
+            return
+
+        width = 55
+        print("=" * width)
+        print("   INTERACTION FEATURES (TƯƠNG TÁC)".center(width))
+        print("=" * width)
+        print(f"  {'Bậc tương tác lớn nhất':<35} {self.degree}")
+        print(f"  {'Số cột gốc tham gia':<35} {len(self.interact_cols_)}")
+        print(f"  {'Số đặc trưng mới sinh ra':<35} {len(self.new_col_names_)}")
+        print(f"  {'Tổng biến sau mở rộng':<35} {len(self.feature_names_)}")
+        print("-" * width)
+
+        print("  Cột gốc được chọn:")
+        for i, col in enumerate(self.interact_cols_, 1):
+            print(f"    {i:>2}. {col}")
+        print("-" * width)
+
+        print("  Đặc trưng mới (Top 10):")
+        for i, col in enumerate(self.new_col_names_[:10], 1):
+            print(f"    {i:>2}. {col}")
+        if len(self.new_col_names_) > 10:
+            print(f"       ... và {len(self.new_col_names_) - 10} đặc trưng khác.")
+        print("=" * width)
