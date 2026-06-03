@@ -236,9 +236,7 @@ class KernelRidgeRegressor:
         if not self._fitted:
             raise RuntimeError("Gọi fit() trước khi predict().")
 
-
         X_df = as_numeric_dataframe(X_new)
-        # KernelRidge không lưu feature_names_ riêng, nhưng có thể kiểm tra số cột khớp với X_train_
         if X_df.shape[1] != self.X_train_.shape[1]:
             raise ValueError(
                 f"Số cột của X_new ({X_df.shape[1]}) không khớp với X_train ({self.X_train_.shape[1]})"
@@ -248,8 +246,14 @@ class KernelRidgeRegressor:
         if X_np.ndim == 1:
             X_np = X_np.reshape(1, -1)
 
+        # Tính kernel matrix: K_new shape (m, n)
         K_new = self._compute_kernel(X_np, self.X_train_)
-        return K_new @ self.alpha_
+        
+        # Dự đoán: (m, n) @ (n,) = (m,)
+        y_pred = K_new @ self.alpha_
+        
+        # Đảm bảo output là 1D array
+        return np.asarray(y_pred).ravel()
 
     def evaluate(self, X: np.ndarray, y: np.ndarray, inverse_transform: bool = False) -> dict:
         """Tính MAE, RMSE, R² trên tập dữ liệu cho trước."""

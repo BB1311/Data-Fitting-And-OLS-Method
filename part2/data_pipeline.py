@@ -246,6 +246,40 @@ class DataPipeline:
                 X[col] = np.log1p(X[col])
         return X
 
+    def compute_ols_pvalues(X: pd.DataFrame, y: pd.Series) -> pd.Series:
+        """
+        Tính p-value từ OLS cho từng feature, trả về Series index = feature name.
+        Dùng nội bộ cho drop_high_vif, không cần import model_comparison.
+        """
+        from scipy import stats
+
+        X_arr = X.to_numpy()
+        y_arr = y.to_numpy()
+        n, k = X_arr.shape
+
+        # Thêm intercept
+        X_c = np.column_stack([np.ones(n), X_arr])
+
+        # OLS: beta = (X'X)^-1 X'y
+        XtX = X_c.T @ X_c
+        Xty = X_c.T @ y_arr
+        beta = np.linalg.lstsq(XtX, Xty, rcond=None)[0]
+
+        # Residuals và sigma^2
+        residuals = y_arr - X_c @ beta
+        sigma2 = (residuals @ residuals) / (n - k - 1)
+
+        # Standard errors
+        cov = sigma2 * np.linalg.pinv(XtX)
+        se = np.sqrt(np.diag(cov))
+
+        # t-stats và p-values (two-tailed)
+        t_stats = beta / np.where(se > 0, se, np.nan)
+        p_values = 2 * stats.t.sf(np.abs(t_stats), df=n - k - 1)
+
+        # Bỏ intercept (index 0), chỉ trả về features
+        return pd.Series(p_values[1:], index=X.columns)
+    
 
     # ------------------------------------------------------------------
     # PHẦN A: Outlier
@@ -515,36 +549,72 @@ class DataPipeline:
     def drop_high_vif(
         self,
         X: pd.DataFrame,
+        y: pd.Series,
         threshold: float = 10.0,
-        max_iter: int = 20,
+        max_iter: int = None,  # mặc định = số cột, không hardcode 20
     ) -> tuple[pd.DataFrame, list]:
         """
-        Lặp loại bỏ cột có VIF cao nhất cho đến khi tất cả VIF <= threshold.
-
-        Returns
-        -------
-        X_reduced : DataFrame không còn cột đa cộng tuyến cao
-        dropped   : list tên cột đã bị loại
+        Lặp loại bỏ biến kém ý nghĩa thống kê nhất trong tập vi phạm VIF.
+        
+        Thứ tự ưu tiên loại:
+        1. p-value lớn nhất (kém ý nghĩa nhất)
+        2. |corr với y| nhỏ nhất (tiebreaker)
+        
+        Chỉ xét trong tập biến đang vi phạm (VIF > threshold hoặc VIF = inf).
         """
+        if max_iter is None:
+            max_iter = X.shape[1]  # không bao giờ loại nhiều hơn số cột ban đầu
+
         dropped = []
+        y_aligned = y.loc[X.index]
+
         for iteration in range(max_iter):
-            # Gọi hàm cầu nối đã viết ở trên
-            vif_df = run_vif_check(X)
-            
-            # Cột có VIF cao nhất đang nằm ở dòng đầu tiên
-            worst = vif_df.iloc[0]
+            # ── 1. Tính VIF ────────────────────────────────────────────────
+            # Đảm bảo run_vif_check đã được định nghĩa trong class hoặc import sẵn
+            vif_df = run_vif_check(X) 
 
-            # Dừng nếu giá trị lớn nhất đã thỏa mãn ngưỡng hoặc là vô cực âm (hiếm xảy ra)
-            if not np.isinf(worst['VIF']) and worst['VIF'] <= threshold:
-                break
+            # ── 2. Tìm max VIF đúng cách (không dùng iloc[0] khi chưa sort) ──
+            max_vif = vif_df['VIF'].replace([np.inf, -np.inf], np.nan).max()
+            if pd.isna(max_vif) or max_vif <= threshold:
+                break  # tất cả VIF đã an toàn
 
-            print(f"  [VIF iter {iteration+1}] Loại '{worst['feature']}' (VIF={worst['VIF']:.4f})")
-            
-            # Xóa cột khỏi DataFrame
+            # ── 3. Chỉ lấy tập vi phạm để xét loại ───────────────────────
+            candidates = vif_df[
+                (vif_df['VIF'] > threshold) | np.isinf(vif_df['VIF'])
+            ].copy()
+
+            # ── 4. p-value từ OLS nội bộ (chỉ tính trên candidates) ──────
+            candidates['p_value'] = 1.0
+            try:
+                # Gọi hàm tính p-values thay vì ols_coefficient_table
+                p_map = self.compute_ols_pvalues(X, y_aligned)
+                candidates['p_value'] = candidates['feature'].map(p_map).fillna(1.0)
+            except Exception:
+                pass  # ma trận suy biến → giữ p_value=1.0, OLS không chạy được
+
+            # ── 5. |corr với y| làm tiebreaker ────────────────────────────
+            correlations = X[candidates['feature']].corrwith(y_aligned).abs()
+            candidates['abs_corr'] = candidates['feature'].map(correlations).fillna(0.0)
+
+            # ── 6. Sort 2 tầng trong tập vi phạm ──────────────────────────
+            # Tầng 1: p_value giảm dần → kém ý nghĩa nhất lên đầu
+            # Tầng 2: abs_corr tăng dần → ít liên quan y nhất lên đầu (tiebreaker)
+            candidates = candidates.sort_values(
+                by=['p_value', 'abs_corr'],
+                ascending=[False, True]
+            )
+
+            worst = candidates.iloc[0]
+
+            print(
+                f"  [VIF iter {iteration+1}] Loại '{worst['feature']}' "
+                f"(VIF={worst['VIF']:.2f}, p={worst['p_value']:.4f}, |corr|={worst['abs_corr']:.4f})"
+            )
+
             X = X.drop(columns=[worst['feature']])
             dropped.append(worst['feature'])
-            
-        print(f"\n[VIF] Đã loại {len(dropped)} cột: {dropped}")
+
+        print(f"\n[VIF] Đã loại {len(dropped)} biến kém ý nghĩa: {dropped}")
         return X, dropped
 
     # ------------------------------------------------------------------
