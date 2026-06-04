@@ -499,6 +499,11 @@ class DataPipeline:
         if self.scale:
             X = self._apply_scale(X)
 
+        # ← Tự động loại các cột đa cộng tuyến đã học từ drop_high_vif()
+        if hasattr(self, 'dropped_vif_cols_') and self.dropped_vif_cols_:
+            cols_to_drop = [c for c in self.dropped_vif_cols_ if c in X.columns]
+            X = X.drop(columns=cols_to_drop)
+
         self._feature_names_ = X.columns.tolist()
         return X
 
@@ -617,6 +622,7 @@ class DataPipeline:
             dropped.append(worst['feature'])
 
         print(f"\n[VIF] Đã loại {len(dropped)} biến kém ý nghĩa: {dropped}")
+        self.dropped_vif_cols_ = dropped
         return X, dropped
 
     # ------------------------------------------------------------------
