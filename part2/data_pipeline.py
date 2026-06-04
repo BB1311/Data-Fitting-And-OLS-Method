@@ -246,6 +246,7 @@ class DataPipeline:
                 X[col] = np.log1p(X[col])
         return X
 
+    @staticmethod
     def compute_ols_pvalues(X: pd.DataFrame, y: pd.Series) -> pd.Series:
         """
         Tính p-value từ OLS cho từng feature, trả về Series index = feature name.
