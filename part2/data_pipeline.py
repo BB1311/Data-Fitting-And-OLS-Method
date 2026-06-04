@@ -574,9 +574,10 @@ class DataPipeline:
             vif_df = run_vif_check(X) 
 
             # ── 2. Tìm max VIF đúng cách (không dùng iloc[0] khi chưa sort) ──
-            max_vif = vif_df['VIF'].replace([np.inf, -np.inf], np.nan).max()
-            if pd.isna(max_vif) or max_vif <= threshold:
-                break  # tất cả VIF đã an toàn
+            has_high_vif = (vif_df['VIF'] > threshold).any() or np.isinf(vif_df['VIF']).any()
+            if not has_high_vif:
+                break
+            
 
             # ── 3. Chỉ lấy tập vi phạm để xét loại ───────────────────────
             candidates = vif_df[
