@@ -339,7 +339,7 @@ class OLSFeatureSelector:
             result = self._backward_elimination_vif(X_df, y_arr)
         elif self.method == "both":
             # Bước 1: loại đa cộng tuyến bằng VIF (chưa cần y)
-            vif_result = self._backward_elimination_vif(X_df, y=None)
+            vif_result = self._backward_elimination_vif(X_df)
             # Bước 2: loại biến không có ý nghĩa thống kê bằng p-value
             pvalue_result = self._backward_elimination_pvalue(
                 vif_result["X_selected"], y_arr
@@ -846,7 +846,7 @@ class PolynomialFeatureGenerator:
 
     def fit(self, X, y=None):
         # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa X thành DataFrame số
-        X_df = _as_numeric_dataframe(X)
+        X_df = as_numeric_dataframe(X)
 
         if self.degree == 1:
             self.poly_cols_ = []
@@ -902,7 +902,7 @@ class PolynomialFeatureGenerator:
             raise ValueError("Mô hình chưa được fit.")
             
         # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa dữ liệu mới truyền vào
-        X_df = _as_numeric_dataframe(X)
+        X_df = as_numeric_dataframe(X)
 
         missing = set(self.poly_cols_) - set(X_df.columns)
         if missing:
@@ -979,7 +979,7 @@ class InteractionFeatureGenerator:
 
     def fit(self, X, y=None):
         # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa X thành DataFrame số
-        X_df = _as_numeric_dataframe(X)
+        X_df = as_numeric_dataframe(X)
 
         # Lọc cột số liên tục (Lúc này X_df đã đảm bảo là số)
         num_cols = X_df.columns.tolist()
@@ -1029,7 +1029,7 @@ class InteractionFeatureGenerator:
             raise ValueError("Mô hình chưa được fit.")
             
         # [TÍCH HỢP HÀM CHECK]: Chuẩn hóa dữ liệu mới truyền vào
-        X_df = _as_numeric_dataframe(X)
+        X_df = as_numeric_dataframe(X)
         
         missing = set(self.interact_cols_) - set(X_df.columns)
         if missing:
