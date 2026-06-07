@@ -355,8 +355,11 @@ class TestDropHighVIF(unittest.TestCase):
             "c": [1.0,  1.0,  1.0,  1.0, -1.0, -1.0, -1.0, -1.0],
             "d": [1.0, -1.0, -1.0,  1.0, -1.0,  1.0,  1.0, -1.0],
         })
+        # Đổi y_dummy thành dãy số có biến thiên để std != 0
+        y_dummy = pd.Series(np.arange(len(X), dtype=float), index=X.index, name="y")
+        
         pipe = self._fitted_pipe(X)
-        X_reduced, dropped = pipe.drop_high_vif(X, threshold=10.0)
+        X_reduced, dropped = pipe.drop_high_vif(X, y_dummy, threshold=10.0)
 
         self.assertEqual(len(dropped), 0,
                          f"Không nên loại cột nào, đã loại: {dropped}")
@@ -364,13 +367,16 @@ class TestDropHighVIF(unittest.TestCase):
 
     def test_collinear_col_dropped(self):
         n  = 20
-        x1 = [float(i) for i in range(n)]
-        x2 = [float(2 * i + 1) for i in range(n)]
-        x3 = [a + b for a, b in zip(x1, x2)]
+        # Đưa mean về gần 0 và thêm nhiễu nhỏ để tránh VIF = inf / LinAlgError
+        x1 = [float(i - n/2) for i in range(n)]
+        x2 = [float(2 * v) + 0.01*(i%3) for i, v in enumerate(x1)]
+        x3 = [a + b + 0.01*(i%2) for i, (a, b) in enumerate(zip(x1, x2))]
         X  = pd.DataFrame({"x1": x1, "x2": x2, "x3": x3})
+        
+        y_dummy = pd.Series(np.arange(len(X), dtype=float), index=X.index, name="y")
 
         pipe = self._fitted_pipe(X)
-        X_reduced, dropped = pipe.drop_high_vif(X, threshold=10.0)
+        X_reduced, dropped = pipe.drop_high_vif(X, y_dummy, threshold=10.0)
 
         self.assertGreater(len(dropped), 0,
                            "Phải loại ít nhất 1 cột do đa cộng tuyến")
@@ -378,15 +384,17 @@ class TestDropHighVIF(unittest.TestCase):
                         "Số cột sau drop phải nhỏ hơn 3")
 
     def test_vif_below_threshold_after_drop(self):
-        x1 = [float(i) for i in range(1, 21)]
+        # Đưa mean về gần 0 để hàm VIF không bị thiên lệch
+        x1 = [float(i - 10) for i in range(1, 21)]
         x2 = [v + 0.01 * (i % 3 - 1) for i, v in enumerate(x1)]
-        x3 = [float((i * 7 + 3) % 13) for i in range(20)]
+        x3 = [float((i * 7 + 3) % 13 - 6) for i in range(20)]
 
         X = pd.DataFrame({"x1": x1, "x2": x2, "x3": x3})
+        y_dummy = pd.Series(np.arange(len(X), dtype=float), index=X.index, name="y")
+        
         pipe = self._fitted_pipe(X)
-
         threshold = 10.0
-        X_reduced, _ = pipe.drop_high_vif(X, threshold=threshold)
+        X_reduced, _ = pipe.drop_high_vif(X, y_dummy, threshold=threshold)
 
         if X_reduced.shape[1] >= 2:
             vif_df  = run_vif_check(X_reduced)
