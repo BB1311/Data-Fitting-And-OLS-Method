@@ -3,9 +3,6 @@ test_data_pipeline.py
 =====================
 Unit tests cho class DataPipeline (data_pipeline.py).
 
-Mỗi method công khai có ít nhất 2 test case trên dữ liệu đã biết.
-KHÔNG dùng random — tất cả fixture là dữ liệu tường minh, cố định.
-
 Chạy:
     python -m pytest test_data_pipeline.py -v
     # hoặc
@@ -26,13 +23,9 @@ for _p in [_ROOT, _HERE]:
 
 from part2.data_pipeline import DataPipeline, run_vif_check
 
-
-# ══════════════════════════════════════════════════════════════════════
-# FIXTURE — dữ liệu tường minh, không dùng random
-# ══════════════════════════════════════════════════════════════════════
 def _make_simple_df() -> pd.DataFrame:
     """
-    DataFrame tối giản với giá trị cố định, không random.
+    DataFrame tối giản với giá trị cố định.
     n=10 để tính quantile dễ kiểm tra tay.
     """
     return pd.DataFrame({
