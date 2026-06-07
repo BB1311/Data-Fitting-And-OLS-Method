@@ -20,14 +20,19 @@ class TestKFoldOLS:
         OLS trên dữ liệu tuyến tính hoàn hảo (không nhiễu):
         CV MSE phải gần 0, CV R² phải gần 1.
         """
-        X, y, _ = _make_linear_data(noise=0.0, seed=1)
+        X = np.array([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0],
+                      [4.0, 8.0], [5.0, 10.0]])
+        y = np.array([3.0, 5.0, 7.0, 9.0, 11.0])
         res = kfold_cv(X, y, k=5, model="ols", random_state=0)
         assert res["cv_mse"] < 1e-10, f"CV MSE={res['cv_mse']:.2e} (kỳ vọng ≈ 0)"
         assert res["cv_r2"]  > 0.999,  f"CV R²={res['cv_r2']:.6f} (kỳ vọng ≈ 1)"
 
     def test_ols_returns_correct_keys(self):
         """kfold_cv() phải trả về đủ các key."""
-        X, y, _ = _make_linear_data(noise=1.0, seed=2)
+        X = np.array([[1.0], [2.0], [3.0], [4.0], [5.0],
+                      [6.0], [7.0], [8.0], [9.0], [10.0]])
+        y = np.array([2.1, 3.9, 6.2, 7.8, 10.1,
+                      12.3, 13.8, 16.2, 17.9, 20.1])
         res = kfold_cv(X, y, k=5, model="ols")
         for key in ("cv_mse", "cv_rmse", "cv_mae", "cv_r2",
                     "fold_mse", "fold_r2", "k", "model", "lam"):
@@ -35,22 +40,26 @@ class TestKFoldOLS:
 
     def test_ols_fold_count(self):
         """fold_mse phải có đúng k phần tử."""
-        X, y, _ = _make_linear_data(noise=0.5, seed=3)
+        X = np.array([[i] for i in range(1, 31)], dtype=float)
+        y = np.array([2.0 * i + 0.5 for i in range(1, 31)])
         for k in [3, 5, 10]:
             res = kfold_cv(X, y, k=k, model="ols")
             assert len(res["fold_mse"]) == k
             assert len(res["fold_r2"])  == k
 
     def test_ols_reproducible_with_same_seed(self):
-        """Cùng random_state phải cho kết quả giống nhau."""
-        X, y, _ = _make_linear_data(noise=1.0, seed=4)
+        X = np.array([[1.0], [2.0], [3.0], [4.0], [5.0],
+                      [6.0], [7.0], [8.0], [9.0], [10.0]])
+        y = np.array([2.1, 4.3, 5.9, 8.2, 9.8,
+                      12.1, 13.9, 16.2, 17.8, 20.1])
         r1 = kfold_cv(X, y, k=5, model="ols", random_state=99)
         r2 = kfold_cv(X, y, k=5, model="ols", random_state=99)
         assert r1["cv_mse"] == r2["cv_mse"]
 
     def test_ols_cv_mse_equals_mean_fold_mse(self):
         """cv_mse phải bằng trung bình fold_mse theo công thức CV(k)."""
-        X, y, _ = _make_linear_data(noise=0.5, seed=6)
+        X = np.array([[i] for i in range(1, 21)], dtype=float)
+        y = np.array([3.0 * i + 1.0 for i in range(1, 21)])
         res = kfold_cv(X, y, k=5, model="ols")
         expected = float(np.mean(res["fold_mse"]))
         assert abs(res["cv_mse"] - expected) < 1e-12
@@ -63,7 +72,11 @@ class TestKFoldRidge:
         Ridge(λ≈0) phải cho CV MSE gần bằng OLS.
         Khi λ → 0, Ridge → OLS.
         """
-        X, y, _ = _make_linear_data(noise=1.0, seed=10)
+        X = np.array([[1.0, 2.0], [2.0, 3.0], [3.0, 4.0],
+                      [4.0, 5.0], [5.0, 6.0], [6.0, 7.0],
+                      [7.0, 8.0], [8.0, 9.0], [9.0, 10.0], [10.0, 11.0]])
+        y = np.array([2.1, 3.9, 5.8, 7.2, 9.1,
+                      11.0, 12.8, 15.1, 16.9, 19.2])
         ols_res   = kfold_cv(X, y, k=5, model="ols",   random_state=42)
         ridge_res = kfold_cv(X, y, k=5, model="ridge", lam=1e-9, random_state=42)
         diff = abs(ols_res["cv_mse"] - ridge_res["cv_mse"])
@@ -73,7 +86,11 @@ class TestKFoldRidge:
         """
         Khi λ rất lớn, Ridge co hệ số về 0 → CV MSE tăng so với OLS.
         """
-        X, y, _ = _make_linear_data(noise=0.5, seed=11)
+        X = np.array([[1.0, 2.0], [2.0, 3.0], [3.0, 4.0],
+                      [4.0, 5.0], [5.0, 6.0], [6.0, 7.0],
+                      [7.0, 8.0], [8.0, 9.0], [9.0, 10.0], [10.0, 11.0]])
+        y = np.array([2.1, 3.9, 5.8, 7.2, 9.1,
+                      11.0, 12.8, 15.1, 16.9, 19.2])
         ols_res   = kfold_cv(X, y, k=5, model="ols",   random_state=42)
         ridge_res = kfold_cv(X, y, k=5, model="ridge", lam=1e8, random_state=42)
         assert ridge_res["cv_mse"] > ols_res["cv_mse"]
@@ -117,7 +134,8 @@ class TestKFoldRidge:
 
     def test_ridge_perfect_data(self):
         """Ridge(λ nhỏ) trên dữ liệu hoàn hảo: CV MSE gần 0."""
-        X, y, _ = _make_linear_data(noise=0.0, seed=12)
+        X = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+        y = np.array([3.0, 5.0, 7.0, 9.0, 11.0])
         res = kfold_cv(X, y, k=5, model="ridge", lam=1e-9, random_state=0)
         assert res["cv_mse"] < 1e-8, f"CV MSE={res['cv_mse']:.2e}"
 
@@ -126,7 +144,10 @@ class TestKFoldLasso:
 
     def test_lasso_lam0_close_to_ols(self):
         """Lasso(λ≈0) phải cho CV MSE gần bằng OLS."""
-        X, y, _ = _make_linear_data(noise=1.0, seed=20)
+        X = np.array([[1.0], [2.0], [3.0], [4.0], [5.0],
+                      [6.0], [7.0], [8.0], [9.0], [10.0]])
+        y = np.array([2.1, 4.3, 5.9, 8.2, 9.8,
+                      12.1, 13.9, 16.2, 17.8, 20.1])
         ols_res   = kfold_cv(X, y, k=5, model="ols",   random_state=42)
         lasso_res = kfold_cv(X, y, k=5, model="lasso", lam=1e-8, random_state=42)
         diff = abs(ols_res["cv_mse"] - lasso_res["cv_mse"])
@@ -134,14 +155,18 @@ class TestKFoldLasso:
 
     def test_lasso_large_lam_increases_mse(self):
         """Khi λ rất lớn, Lasso co hệ số về 0 → CV MSE tăng."""
-        X, y, _ = _make_linear_data(noise=0.5, seed=21)
+        X = np.array([[1.0], [2.0], [3.0], [4.0], [5.0],
+                      [6.0], [7.0], [8.0], [9.0], [10.0]])
+        y = np.array([2.1, 4.3, 5.9, 8.2, 9.8,
+                      12.1, 13.9, 16.2, 17.8, 20.1])
         ols_res   = kfold_cv(X, y, k=5, model="ols",   random_state=42)
         lasso_res = kfold_cv(X, y, k=5, model="lasso", lam=1e4, random_state=42)
         assert lasso_res["cv_mse"] > ols_res["cv_mse"]
 
     def test_lasso_returns_correct_keys(self):
         """kfold_cv Lasso phải trả về đủ key."""
-        X, y, _ = _make_linear_data(noise=1.0, seed=22)
+        X = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+        y = np.array([2.0, 4.1, 5.9, 8.2, 9.8])
         res = kfold_cv(X, y, k=5, model="lasso", lam=0.1)
         for key in ("cv_mse", "cv_rmse", "cv_mae", "cv_r2", "fold_mse"):
             assert key in res
@@ -189,13 +214,15 @@ class TestKFoldLasso:
             f"tổng số biến = {X.shape[1]}"
         )
 
+# Data dùng chung cho TestCompareModels
+_X_cmp = np.array([[i] for i in range(1, 21)], dtype=float)
+_y_cmp = np.array([2.0 * i + 0.5 for i in range(1, 21)])
+
 # 4. compare_models_cv
 class TestCompareModels:
-
     def test_returns_correct_keys(self):
         """compare_models_cv phải trả về đủ key."""
-        X, y, _ = _make_linear_data(noise=1.0, seed=30)
-        result = compare_models_cv(X, y, k=5,
+        result = compare_models_cv(_X_cmp, _y_cmp, k=5,
                                    lam_grid=[0.1, 1.0, 10.0],
                                    random_state=42)
         for key in ("ols_result", "ridge_results", "lasso_results",
@@ -205,9 +232,8 @@ class TestCompareModels:
 
     def test_best_lam_is_in_grid(self):
         """best_lam_ridge và best_lam_lasso phải nằm trong lam_grid."""
-        X, y, _ = _make_linear_data(noise=1.0, seed=31)
         lam_grid = [0.01, 0.1, 1.0, 10.0, 100.0]
-        result = compare_models_cv(X, y, k=5,
+        result = compare_models_cv(_X_cmp, _y_cmp, k=5,
                                    lam_grid=lam_grid,
                                    random_state=42)
         assert result["best_lam_ridge"] in lam_grid
@@ -215,17 +241,15 @@ class TestCompareModels:
 
     def test_ridge_results_length(self):
         """ridge_results phải có đúng len(lam_grid) phần tử."""
-        X, y, _ = _make_linear_data(noise=1.0, seed=32)
         lam_grid = [0.1, 1.0, 10.0]
-        result = compare_models_cv(X, y, k=5, lam_grid=lam_grid)
+        result = compare_models_cv(_X_cmp, _y_cmp, k=5, lam_grid=lam_grid)
         assert len(result["ridge_results"]) == len(lam_grid)
         assert len(result["lasso_results"]) == len(lam_grid)
 
     def test_best_mse_is_minimum(self):
         """best_ridge và best_lasso phải có CV MSE nhỏ nhất trong các kết quả tương ứng."""
-        X, y, _ = _make_linear_data(noise=1.0, seed=33)
         lam_grid = [0.1, 1.0, 10.0]
-        result = compare_models_cv(X, y, k=5, lam_grid=lam_grid, random_state=42)
+        result = compare_models_cv(_X_cmp, _y_cmp, k=5, lam_grid=lam_grid, random_state=42)
 
         ridge_mses = [r["cv_mse"] for r in result["ridge_results"]]
         lasso_mses = [r["cv_mse"] for r in result["lasso_results"]]
@@ -288,32 +312,36 @@ class TestEdgeCases:
 
     def test_invalid_model_raises(self):
         """model không hợp lệ phải raise AssertionError."""
-        X, y, _ = _make_linear_data(seed=40)
+        X = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+        y = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
         with pytest.raises(AssertionError):
             kfold_cv(X, y, k=5, model="svm")
 
     def test_k_less_than_2_raises(self):
         """k < 2 phải raise AssertionError."""
-        X, y, _ = _make_linear_data(seed=41)
+        X = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+        y = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
         with pytest.raises(AssertionError):
             kfold_cv(X, y, k=1, model="ols")
 
     def test_n_less_than_k_raises(self):
         """n < k phải raise AssertionError."""
-        X = np.random.randn(3, 2)
-        y = np.random.randn(3)
+        X = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        y = np.array([1.0, 2.0, 3.0])
         with pytest.raises(AssertionError):
             kfold_cv(X, y, k=5, model="ols")
 
     def test_handles_n_not_divisible_by_k(self):
         """n không chia hết cho k vẫn phải chạy đúng."""
-        X, y, _ = _make_linear_data(n=103, noise=0.5, seed=42)
+        X = np.array([[i] for i in range(1, 12)], dtype=float)  # n=11
+        y = np.array([2.0 * i + 0.3 for i in range(1, 12)])
         res = kfold_cv(X, y, k=5, model="ols")
         assert len(res["fold_mse"]) == 5
         assert res["cv_mse"] > 0
 
     def test_k_equals_n_leave_one_out(self):
         """k = n là Leave-One-Out CV — phải chạy được."""
-        X, y, _ = _make_linear_data(n=20, p=2, noise=0.5, seed=43)
+        X = np.array([[i] for i in range(1, 21)], dtype=float)
+        y = np.array([2.0 * i + 0.1 for i in range(1, 21)])
         res = kfold_cv(X, y, k=20, model="ols")
         assert len(res["fold_mse"]) == 20
