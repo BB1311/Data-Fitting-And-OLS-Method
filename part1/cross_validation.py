@@ -18,6 +18,32 @@ def compute_rmse(y_true, y_pred):
 def compute_mae(y_true, y_pred):
     return float(np.mean(np.abs(y_true - y_pred)))
 
+
+def _ols_predict_with_normal_equation(X_train: np.ndarray, y_train: np.ndarray, X_val: np.ndarray) -> np.ndarray:
+    """
+    Fit OLS bằng công thức normal equation để CV vẫn chạy được khi X_train suy biến.
+
+    OLSRegressor ở part1/ols_implementation.py giữ hành vi strict và sẽ raise
+    với đa cộng tuyến hoàn hảo. Trong cross-validation, các fold nhỏ có thể
+    rơi vào trường hợp này dù dữ liệu gốc vẫn hợp lệ, nên helper này dùng
+    nghiệm normal equation và rơi về pseudo-inverse khi cần.
+    """
+    X_train = np.asarray(X_train, dtype=float)
+    y_train = np.asarray(y_train, dtype=float).ravel()
+    X_val = np.asarray(X_val, dtype=float)
+
+    train_design = np.column_stack([np.ones(len(X_train)), X_train])
+    XtX = train_design.T @ train_design
+    Xty = train_design.T @ y_train
+
+    try:
+        beta_hat = np.linalg.solve(XtX, Xty)
+    except np.linalg.LinAlgError:
+        beta_hat = np.linalg.pinv(train_design) @ y_train
+
+    val_design = np.column_stack([np.ones(len(X_val)), X_val])
+    return val_design @ beta_hat
+
 # HÀM CHÍNH: k-FOLD CROSS-VALIDATION
 def kfold_cv(
     X: np.ndarray,
@@ -82,6 +108,7 @@ def kfold_cv(
     boundaries = np.concatenate([[0], np.cumsum(fold_sizes)])
 
     fold_mse, fold_rmse, fold_mae, fold_r2 = [], [], [], []
+    oof_pred = np.empty(n, dtype=float)
 
     val_indices_list = []
     for i in range(k):
@@ -94,8 +121,7 @@ def kfold_cv(
         X_val,   y_val   = X[val_idx],   y[val_idx]
 
         if model == "ols":
-            reg    = OLSRegressor(fit_intercept=True).fit(X_train, y_train)
-            y_pred = reg.predict(X_val)
+            y_pred = _ols_predict_with_normal_equation(X_train, y_train, X_val)
         elif model == "ridge":
             res   = ridge_fit(X_train, y_train, lam=lam)
             beta  = res["beta_hat"]
@@ -108,6 +134,7 @@ def kfold_cv(
         fold_mse.append(compute_mse(y_val, y_pred))
         fold_rmse.append(compute_rmse(y_val, y_pred))
         fold_mae.append(compute_mae(y_val, y_pred))
+        oof_pred[val_idx] = y_pred
         if len(y_val) < 2:
             r2 = np.nan  # không xác định được R² cho 1 điểm
         else:
@@ -118,10 +145,10 @@ def kfold_cv(
     cv_mse = float(np.mean(fold_mse))
     cv_rmse = float(np.sqrt(cv_mse))
     cv_mae = float(np.mean(fold_mae))
-    if np.all(np.isnan(fold_r2)):
+    if np.any(np.isnan(oof_pred)):
         cv_r2 = np.nan
     else:
-        cv_r2 = float(np.nanmean(fold_r2))
+        cv_r2 = compute_r2(y, oof_pred)
 
     std_mse = float(np.std(fold_mse, ddof=1))
     std_rmse = float(np.std(fold_rmse, ddof=1))
