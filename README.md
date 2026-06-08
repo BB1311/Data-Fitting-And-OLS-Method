@@ -64,7 +64,7 @@ Group_6/
 Đồ án sử dụng Python cho các thuật toán lõi được cài đặt từ đầu (from scratch) dựa trên công thức toán học. Các thư viện phổ biến trong Data Science được sử dụng với mục đích cụ thể như sau:
 * **`pandas`**: Đọc, xử lý và thao tác dữ liệu.
 * **`matplotlib`, `seaborn`**: Trực quan hóa dữ liệu và kết quả mô hình.
-* **`numpy`, `scipy`, `scikit-learn`**: S o sánh và kiểm chứng kết quả (verification) của thuật toán tự cài đặt, không dùng để thay thế phần cài đặt thuật toán chính.
+* **`numpy`, `scipy`, `scikit-learn`**: So sánh và kiểm chứng kết quả (verification) của thuật toán tự cài đặt, không dùng để thay thế phần cài đặt thuật toán chính.
 * **`pytest`**: Cho các kịch bản kiểm thử tự động.
 
 Để chạy source code, cài đặt các thư viện cần thiết bằng lệnh:
