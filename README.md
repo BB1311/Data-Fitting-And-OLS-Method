@@ -57,14 +57,14 @@ Group_6/
 ```
 
 ## Dữ liệu sử dụng
-Đồ án sử dụng bộ dữ liệu **Ames Housing** (nguồn: [Kaggle](https://www.kaggle.com/datasets/shashanknecrothapa/ames-housing-dataset/data)), được lưu tại `part2/data/AmesHousing.csv`. Đây là bộ dữ liệu thực tế thỏa mãn đầy đủ các yêu cầu của đồ án (có chứa missing values, biến mục tiêu liên tục và số lượng quan trắc đủ lớn).
+Đồ án sử dụng bộ dữ liệu **Ames Housing** nguyên bản được biên soạn bởi **Giáo sư Dean De Cock** ([Bài báo học thuật gốc, 2011](https://jse.amstat.org/v19n3/decock.pdf)) cho mục đích giáo dục khoa học dữ liệu. Dữ liệu được lấy từ nền tảng [Kaggle](https://www.kaggle.com/datasets/shashanknecrothapa/ames-housing-dataset/data) và lưu trữ tại `part2/data/AmesHousing.csv`. Đây là bộ dữ liệu thực tế lý tưởng, thỏa mãn đầy đủ các yêu cầu của đồ án (có chứa missing values, biến mục tiêu liên tục và số lượng quan trắc đủ lớn).
 
 ## Yêu cầu hệ thống và Cài đặt
 Đồ án yêu cầu **Python 3.10+**. 
 Đồ án sử dụng Python cho các thuật toán lõi được cài đặt từ đầu (from scratch) dựa trên công thức toán học. Các thư viện phổ biến trong Data Science được sử dụng với mục đích cụ thể như sau:
 * **`pandas`**: Đọc, xử lý và thao tác dữ liệu.
 * **`matplotlib`, `seaborn`**: Trực quan hóa dữ liệu và kết quả mô hình.
-* **`numpy`, `scipy`, `scikit-learn`**: So sánh và kiểm chứng kết quả (verification) của thuật toán tự cài đặt, không dùng để thay thế phần cài đặt thuật toán chính.
+* **`numpy`, `scipy`, `scikit-learn`**: S o sánh và kiểm chứng kết quả (verification) của thuật toán tự cài đặt, không dùng để thay thế phần cài đặt thuật toán chính.
 * **`pytest`**: Cho các kịch bản kiểm thử tự động.
 
 Để chạy source code, cài đặt các thư viện cần thiết bằng lệnh:
