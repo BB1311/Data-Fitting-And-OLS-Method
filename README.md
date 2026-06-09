@@ -71,11 +71,18 @@ Group_6/
 ```bash
 pip install -r requirements.txt
 ```
+## Hướng dẫn chạy chương trình (Quick Start)
 
-**Lưu ý quan trọng về môi trường hệ thống:**  
+Sau khi hoàn tất cài đặt (`pip install -r requirements.txt`), thực hiện tuần tự các bước sau:
 
-* **Jupyter Notebook:** Môi trường cần cài đặt sẵn Jupyter để có thể xem và thực thi các file `part1_notebook.ipynb` và `part2_notebook.ipynb`.  
-* **Pytest:** Đồ án có tích hợp sẵn `unit_tests`, để chạy kiểm thử tổng quát, hãy gõ lệnh `pytest` tại thư mục gốc.
+**Bước 1: Kiểm thử mã nguồn (Unit Testing)**
+Mở Terminal tại thư mục gốc và chạy lệnh `pytest` để đảm bảo toàn bộ thuật toán và hàm xử lý hoạt động chính xác.
+
+**Bước 2: Xem minh họa Toán học và Thuật toán (Phần 1)**
+Mở file `part1/part1_notebook.ipynb` bằng Jupyter Notebook/Lab và chạy các ô mã để xem chi tiết cài đặt thuật toán OLS từ đầu, phân tích thặng dư và các mô phỏng toán học.
+
+**Bước 3: Chạy luồng xử lý và Đánh giá mô hình (Phần 2)**
+Mở file `part2/part2_notebook.ipynb` và chạy các ô mã để thực thi toàn bộ quy trình: Khảo sát dữ liệu (EDA), làm sạch dữ liệu qua Data Pipeline, huấn luyện và so sánh hiệu suất các mô hình hồi quy trên tập dữ liệu thực tế Ames Housing.
 
 ## Thông tin môn học
 **Tên môn học:** Toán ứng dụng và thống kê
